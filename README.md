@@ -6,10 +6,13 @@ A terminal UI client for Postman collections, inspired by lazygit.
 
 - Browse and manage Postman collections
 - Execute HTTP requests directly from the terminal
-- Three-pane layout with vim-style navigation
-- Favorite collections for quick access
-- Search collections and requests with `/`
+- Environment and workspace support with variable substitution
+- Interactive JSON response viewer with folding
+- Four-pane layout with vim-style navigation
+- Favorite collections and requests for quick access
+- Search collections, requests, and JSON responses with `/`
 - Edit requests using your preferred text editor
+- Confirmation dialog for destructive requests (POST, PUT, DELETE, PATCH)
 
 ## Installation
 
@@ -26,7 +29,7 @@ Configuration is stored at `~/.config/lazypost/config.toml`
 ## Key Bindings
 
 ### Navigation
-- `1/2/3` - Switch between panes (Collections, Requests, Preview)
+- `1/2/3/4` - Switch between panes (Collections, Requests, Preview, Response)
 - `Tab` - Cycle through panes
 - `j/k` or `Up/Down` - Navigate lists
 - `Enter` - Load collection / Select request / Execute
@@ -35,10 +38,21 @@ Configuration is stored at `~/.config/lazypost/config.toml`
 ### Actions
 - `e` - Execute current request
 - `E` - Edit request in external editor
+- `S` - Save local edits to Postman
 - `a` - Add new request (in Requests pane)
-- `f` - Toggle favorite (in Collections pane)
+- `f` - Toggle favorite
 - `/` - Search current list
 - `n/N` - Next/Previous search match
+
+### Environment & Workspace
+- `v` - Select environment
+- `V` - View/edit environment variables
+- `w` - Select workspace
+
+### Response Pane (JSON)
+- `h/l` - Collapse/Expand node
+- `H/L` - Collapse/Expand all
+- `/` - Search JSON
 
 ## Editor Selection
 

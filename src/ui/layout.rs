@@ -504,23 +504,23 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         InputMode::Normal => {
             let has_unsaved = app.has_unsaved_edit();
             match (app.focused_pane, has_env, has_unsaved) {
-                (FocusedPane::Collections, true, _) => "1-4: Pane | j/k: Nav | Enter: Load | f: Fav | w: Workspace | v: Env | V: Vars | q: Quit",
-                (FocusedPane::Collections, false, _) => "1-4: Pane | j/k: Nav | Enter: Load | f: Fav | w: Workspace | v: Env | q: Quit",
-                (FocusedPane::Requests, true, _) => "1-4: Pane | j/k: Nav | Enter: Select | e: Exec | a: Add | f: Fav | w: Workspace | V: Vars | q: Quit",
-                (FocusedPane::Requests, false, _) => "1-4: Pane | j/k: Nav | Enter: Select | e: Exec | a: Add | f: Fav | w: Workspace | v: Env | q: Quit",
-                (FocusedPane::Preview, true, true) => "1-4: Pane | e: Execute | E: Edit | S: Save* | w: Workspace | v: Env | V: Vars | q: Quit",
-                (FocusedPane::Preview, true, false) => "1-4: Pane | e: Execute | E: Edit | w: Workspace | v: Env | V: Vars | q: Quit",
-                (FocusedPane::Preview, false, true) => "1-4: Pane | e: Execute | E: Edit | S: Save* | w: Workspace | v: Env | q: Quit",
-                (FocusedPane::Preview, false, false) => "1-4: Pane | e: Execute | E: Edit | w: Workspace | v: Env | q: Quit",
+                (FocusedPane::Collections, true, _) => "1-4: Pane | j/k: Nav | Enter: Load | f: Fav | v: Env | V: Vars | q: Quit",
+                (FocusedPane::Collections, false, _) => "1-4: Pane | j/k: Nav | Enter: Load | f: Fav | v: Env | q: Quit",
+                (FocusedPane::Requests, true, _) => "1-4: Pane | j/k: Nav | Enter: Select | e: Exec | a: Add | f: Fav | v: Env | V: Vars | q: Quit",
+                (FocusedPane::Requests, false, _) => "1-4: Pane | j/k: Nav | Enter: Select | e: Exec | a: Add | f: Fav | v: Env | q: Quit",
+                (FocusedPane::Preview, true, true) => "1-4: Pane | e: Exec | E: Edit | S: Save* | v: Env | V: Vars | q: Quit",
+                (FocusedPane::Preview, true, false) => "1-4: Pane | e: Exec | E: Edit | v: Env | V: Vars | q: Quit",
+                (FocusedPane::Preview, false, true) => "1-4: Pane | e: Exec | E: Edit | S: Save* | v: Env | q: Quit",
+                (FocusedPane::Preview, false, false) => "1-4: Pane | e: Exec | E: Edit | v: Env | q: Quit",
                 (FocusedPane::Response, true, _) => if app.json_viewer_state.is_some() {
-                    "j/k: Nav | h/l: Fold | H/L: Fold All | /: Search | n/N: Match | q: Quit"
+                    "j/k: Nav | h/l: Fold | H/L: Fold All | /: Search | n/N: Match | v: Env | q: Quit"
                 } else {
-                    "1-4: Pane | w: Workspace | v: Env | V: Vars | q: Quit"
+                    "1-4: Pane | v: Env | V: Vars | q: Quit"
                 },
                 (FocusedPane::Response, false, _) => if app.json_viewer_state.is_some() {
-                    "j/k: Nav | h/l: Fold | H/L: Fold All | /: Search | n/N: Match | q: Quit"
+                    "j/k: Nav | h/l: Fold | H/L: Fold All | /: Search | n/N: Match | v: Env | q: Quit"
                 } else {
-                    "1-4: Pane | w: Workspace | v: Env | q: Quit"
+                    "1-4: Pane | v: Env | q: Quit"
                 },
             }
         },
