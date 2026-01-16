@@ -54,6 +54,8 @@ pub struct JsonViewerState {
     pub current_match_index: usize,
     /// Color scheme
     pub colors: JsonColors,
+    /// Whether we need to expand all on next render
+    needs_expand: bool,
 }
 
 impl JsonViewerState {
@@ -61,17 +63,15 @@ impl JsonViewerState {
     pub fn new(json_str: &str) -> Option<Self> {
         let json: Value = serde_json::from_str(json_str).ok()?;
 
-        let mut state = Self {
+        let state = Self {
             tree_state: TreeState::default(),
             json,
             search_query: String::new(),
             search_matches: Vec::new(),
             current_match_index: 0,
             colors: JsonColors::default(),
+            needs_expand: true, // Expand on first render
         };
-
-        // Expand all nodes by default
-        state.expand_all();
 
         Some(state)
     }
@@ -282,6 +282,14 @@ impl JsonViewerState {
     }
 
     /// Build the tree widget items from the JSON
+    /// Check if we need to expand all and do it (call before rendering)
+    pub fn maybe_expand_all(&mut self) {
+        if self.needs_expand {
+            self.expand_all();
+            self.needs_expand = false;
+        }
+    }
+
     pub fn build_tree_items(&self) -> Vec<TreeItem<'static, JsonNodeId>> {
         self.value_to_tree_items(&self.json, vec![], None)
     }

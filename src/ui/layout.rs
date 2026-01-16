@@ -417,6 +417,9 @@ fn render_response(frame: &mut Frame, app: &mut App, response: &crate::api::Exec
         let status_para = Paragraph::new(status_line).block(status_block);
         frame.render_widget(status_para, chunks[0]);
 
+        // Expand all nodes on first render
+        viewer_state.maybe_expand_all();
+
         // Render the JSON tree
         let tree_items = viewer_state.build_tree_items();
         let tree = Tree::new(&tree_items)
