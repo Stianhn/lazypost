@@ -6,6 +6,7 @@ use tui_tree_widget::{TreeItem, TreeState};
 /// Segment of a path to a JSON node
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum JsonPathSegment {
+    Root,
     Key(String),
     Index(usize),
 }
@@ -42,8 +43,8 @@ impl Default for JsonColors {
 
 /// State for the interactive JSON viewer
 pub struct JsonViewerState {
-    /// Tree widget state for navigation
-    pub tree_state: TreeState<JsonNodeId>,
+    /// Tree widget state for navigation (uses path segments, not full paths)
+    pub tree_state: TreeState<JsonPathSegment>,
     /// The parsed JSON value
     pub json: Value,
     /// Search query
@@ -103,10 +104,11 @@ impl JsonViewerState {
 
     /// Expand all nodes in the tree
     pub fn expand_all(&mut self) {
-        let mut paths_to_open = Vec::new();
-        self.collect_all_paths(&self.json.clone(), vec![], &mut paths_to_open);
+        let mut paths_to_open: Vec<JsonNodeId> = Vec::new();
+        self.collect_expandable_paths(&self.json.clone(), vec![JsonPathSegment::Root], &mut paths_to_open);
         for path in paths_to_open {
-            self.tree_state.open(vec![path]);
+            // open() expects Vec<JsonPathSegment> - the accumulated path
+            self.tree_state.open(path);
         }
     }
 
@@ -114,18 +116,18 @@ impl JsonViewerState {
     pub fn collapse_all(&mut self) {
         self.tree_state.close_all();
         // Keep root open
-        self.tree_state.open(vec![vec![]]);
+        self.tree_state.open(vec![JsonPathSegment::Root]);
     }
 
-    /// Collect all paths to expandable nodes (objects and arrays)
-    fn collect_all_paths(&self, value: &Value, path: JsonNodeId, paths: &mut Vec<JsonNodeId>) {
+    /// Collect all accumulated paths to expandable nodes (objects and arrays)
+    fn collect_expandable_paths(&self, value: &Value, path: JsonNodeId, paths: &mut Vec<JsonNodeId>) {
         match value {
             Value::Object(map) => {
                 paths.push(path.clone());
                 for (key, val) in map {
                     let mut child_path = path.clone();
                     child_path.push(JsonPathSegment::Key(key.clone()));
-                    self.collect_all_paths(val, child_path, paths);
+                    self.collect_expandable_paths(val, child_path, paths);
                 }
             }
             Value::Array(arr) => {
@@ -133,7 +135,7 @@ impl JsonViewerState {
                 for (i, val) in arr.iter().enumerate() {
                     let mut child_path = path.clone();
                     child_path.push(JsonPathSegment::Index(i));
-                    self.collect_all_paths(val, child_path, paths);
+                    self.collect_expandable_paths(val, child_path, paths);
                 }
             }
             _ => {}
@@ -169,7 +171,8 @@ impl JsonViewerState {
         }
 
         let query = self.search_query.to_lowercase();
-        self.find_matches(&self.json.clone(), vec![], &query);
+        // Start with Root in the path
+        self.find_matches(&self.json.clone(), vec![JsonPathSegment::Root], &query);
 
         // Jump to first match
         if !self.search_matches.is_empty() {
@@ -233,14 +236,14 @@ impl JsonViewerState {
 
         let path = self.search_matches[index].clone();
 
-        // Expand all parent nodes - need to build the full identifier path
-        for i in 0..path.len() {
+        // Expand all parent nodes - open each ancestor path
+        for i in 1..path.len() {
             let parent_path = path[..i].to_vec();
-            self.tree_state.open(vec![parent_path]);
+            self.tree_state.open(parent_path);
         }
 
-        // Select the node
-        self.tree_state.select(vec![path]);
+        // Select the node using the accumulated path
+        self.tree_state.select(path);
     }
 
     /// Go to next search match
@@ -290,50 +293,55 @@ impl JsonViewerState {
         }
     }
 
-    pub fn build_tree_items(&self) -> Vec<TreeItem<'static, JsonNodeId>> {
-        self.value_to_tree_items(&self.json, vec![], None)
+    pub fn build_tree_items(&self) -> Vec<TreeItem<'static, JsonPathSegment>> {
+        self.value_to_tree_items(&self.json, vec![JsonPathSegment::Root], JsonPathSegment::Root, None)
     }
 
     /// Convert a JSON value to tree items
+    /// - `path`: The full accumulated path to this node (for search matching)
+    /// - `local_id`: The local identifier for this node (used by TreeItem)
     fn value_to_tree_items(
         &self,
         value: &Value,
         path: JsonNodeId,
+        local_id: JsonPathSegment,
         key: Option<&str>,
-    ) -> Vec<TreeItem<'static, JsonNodeId>> {
+    ) -> Vec<TreeItem<'static, JsonPathSegment>> {
         let is_match = self.is_search_match(&path);
 
         match value {
             Value::Object(map) => {
-                let children: Vec<TreeItem<'static, JsonNodeId>> = map
+                let children: Vec<TreeItem<'static, JsonPathSegment>> = map
                     .iter()
                     .flat_map(|(k, v)| {
                         let mut child_path = path.clone();
-                        child_path.push(JsonPathSegment::Key(k.clone()));
-                        self.value_to_tree_items(v, child_path, Some(k))
+                        let child_local_id = JsonPathSegment::Key(k.clone());
+                        child_path.push(child_local_id.clone());
+                        self.value_to_tree_items(v, child_path, child_local_id, Some(k))
                     })
                     .collect();
 
                 let label = self.format_object_label(key, map.len(), is_match);
-                vec![TreeItem::new(path, label, children).expect("valid tree item")]
+                vec![TreeItem::new(local_id, label, children).expect("valid tree item")]
             }
             Value::Array(arr) => {
-                let children: Vec<TreeItem<'static, JsonNodeId>> = arr
+                let children: Vec<TreeItem<'static, JsonPathSegment>> = arr
                     .iter()
                     .enumerate()
                     .flat_map(|(i, v)| {
                         let mut child_path = path.clone();
-                        child_path.push(JsonPathSegment::Index(i));
-                        self.value_to_tree_items(v, child_path, Some(&format!("[{}]", i)))
+                        let child_local_id = JsonPathSegment::Index(i);
+                        child_path.push(child_local_id.clone());
+                        self.value_to_tree_items(v, child_path, child_local_id, Some(&format!("[{}]", i)))
                     })
                     .collect();
 
                 let label = self.format_array_label(key, arr.len(), is_match);
-                vec![TreeItem::new(path, label, children).expect("valid tree item")]
+                vec![TreeItem::new(local_id, label, children).expect("valid tree item")]
             }
             _ => {
                 let label = self.format_value_label(value, key, is_match);
-                vec![TreeItem::new(path, label, vec![]).expect("valid tree item")]
+                vec![TreeItem::new(local_id, label, vec![]).expect("valid tree item")]
             }
         }
     }

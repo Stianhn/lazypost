@@ -135,6 +135,8 @@ pub struct App {
     pub unsaved_edit: Option<(EditableRequest, usize)>, // (edited request, item_index)
     // Execute confirmation state
     pub pending_execute: Option<PendingExecute>,
+    // Request execution state
+    pub request_executing: bool,
 }
 
 impl App {
@@ -187,6 +189,7 @@ impl App {
             collection_loading: None,
             unsaved_edit: None,
             pending_execute: None,
+            request_executing: false,
         }
     }
 
@@ -1302,10 +1305,12 @@ impl App {
                     self.json_viewer_state = JsonViewerState::new(&response.body);
                     self.response = Some(response);
                     self.loading = false;
+                    self.request_executing = false;
                     self.status_message = String::from("Request completed");
                 }
                 Err(e) => {
                     self.loading = false;
+                    self.request_executing = false;
                     // Include root cause in error message
                     let error_msg = format!("{:#}", e);
                     log_error("execute_request", &error_msg);

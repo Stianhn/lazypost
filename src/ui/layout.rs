@@ -65,6 +65,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         render_collection_loading_popup(frame, app);
     }
 
+    // Render request executing popup if executing
+    if app.request_executing {
+        render_request_executing_popup(frame);
+    }
+
     // Render JSON search overlay if in JSON search mode
     if app.input_mode == InputMode::JsonSearch {
         render_json_search_overlay(frame, app);
@@ -858,6 +863,40 @@ fn render_collection_loading_popup(frame: &mut Frame, app: &App) {
         .borders(Borders::ALL)
         .title(" Loading ")
         .border_style(Style::default().fg(Color::Green))
+        .style(Style::default().bg(Color::Black));
+
+    let paragraph = Paragraph::new(content).block(block);
+
+    frame.render_widget(paragraph, popup_area);
+}
+
+fn render_request_executing_popup(frame: &mut Frame) {
+    let area = frame.area();
+
+    let text = "Performing request...";
+    let popup_width = (text.len() + 6).max(30) as u16;
+    let popup_height = 5u16;
+
+    let x = (area.width.saturating_sub(popup_width)) / 2;
+    let y = (area.height.saturating_sub(popup_height)) / 2;
+
+    let popup_area = Rect::new(x, y, popup_width.min(area.width), popup_height.min(area.height));
+
+    frame.render_widget(Clear, popup_area);
+
+    let content = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("  {}  ", text),
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+    ];
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Request ")
+        .border_style(Style::default().fg(Color::Yellow))
         .style(Style::default().bg(Color::Black));
 
     let paragraph = Paragraph::new(content).block(block);

@@ -343,6 +343,8 @@ async fn run_app(
                                         // Check if method needs confirmation
                                         if !app.start_execute_confirmation() {
                                             // No confirmation needed, execute directly
+                                            app.request_executing = true;
+                                            terminal.draw(|frame| ui::render(frame, &mut app))?;
                                             app.execute_current_request().await?;
                                         }
                                     }
@@ -360,6 +362,8 @@ async fn run_app(
                                     // Check if method needs confirmation
                                     if !app.start_execute_confirmation() {
                                         // No confirmation needed, execute directly
+                                        app.request_executing = true;
+                                        terminal.draw(|frame| ui::render(frame, &mut app))?;
                                         app.execute_current_request().await?;
                                     }
                                 }
@@ -622,6 +626,8 @@ async fn run_app(
                                 // User confirmed, execute the request
                                 app.pending_execute = None;
                                 app.input_mode = InputMode::Normal;
+                                app.request_executing = true;
+                                terminal.draw(|frame| ui::render(frame, &mut app))?;
                                 app.execute_current_request().await?;
                             }
                             KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
