@@ -410,7 +410,7 @@ fn render_response(frame: &mut Frame, app: &mut App, response: &crate::api::Exec
                 format!("{}", response.status),
                 Style::default().fg(status_color).add_modifier(Modifier::BOLD),
             ),
-            Span::raw(format!(" {} | j/k: nav | h/l: collapse/expand | /: search",
+            Span::raw(format!(" {} | j/k: nav | h/l: collapse/expand | /: search | y: copy",
                 response.status_text.split_whitespace().skip(1).collect::<Vec<_>>().join(" "))),
         ]);
 
@@ -518,12 +518,12 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                 (FocusedPane::Preview, false, true) => "1-4: Pane | e: Exec | E: Edit | S: Save* | v: Env | q: Quit",
                 (FocusedPane::Preview, false, false) => "1-4: Pane | e: Exec | E: Edit | v: Env | q: Quit",
                 (FocusedPane::Response, true, _) => if app.json_viewer_state.is_some() {
-                    "j/k: Nav | h/l: Fold | H/L: Fold All | /: Search | n/N: Match | v: Env | q: Quit"
+                    "j/k: Nav | h/l: Fold | H/L: Fold All | /: Search | n/N: Match | y: Copy | v: Env | q: Quit"
                 } else {
                     "1-4: Pane | v: Env | V: Vars | q: Quit"
                 },
                 (FocusedPane::Response, false, _) => if app.json_viewer_state.is_some() {
-                    "j/k: Nav | h/l: Fold | H/L: Fold All | /: Search | n/N: Match | v: Env | q: Quit"
+                    "j/k: Nav | h/l: Fold | H/L: Fold All | /: Search | n/N: Match | y: Copy | v: Env | q: Quit"
                 } else {
                     "1-4: Pane | v: Env | q: Quit"
                 },

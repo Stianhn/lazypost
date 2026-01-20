@@ -323,6 +323,12 @@ async fn run_app(
                                     app.json_viewer_expand_all();
                                 }
                             }
+                            // JSON viewer yank (copy) to clipboard
+                            KeyCode::Char('y') => {
+                                if app.focused_pane == FocusedPane::Response && app.json_viewer_state.is_some() {
+                                    app.json_viewer_yank();
+                                }
+                            }
                             // Enter key behavior depends on focused pane
                             KeyCode::Enter => match app.focused_pane {
                                 FocusedPane::Collections => {

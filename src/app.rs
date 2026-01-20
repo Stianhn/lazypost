@@ -137,6 +137,8 @@ pub struct App {
     pub pending_execute: Option<PendingExecute>,
     // Request execution state
     pub request_executing: bool,
+    // Clipboard (kept alive to persist content on Linux)
+    clipboard: Option<arboard::Clipboard>,
 }
 
 impl App {
@@ -190,6 +192,7 @@ impl App {
             unsaved_edit: None,
             pending_execute: None,
             request_executing: false,
+            clipboard: None,
         }
     }
 
@@ -1939,6 +1942,118 @@ impl App {
             viewer.prev_match();
             self.status_message = viewer.search_status();
         }
+    }
+
+    /// Copy the currently selected JSON value to clipboard
+    pub fn json_viewer_yank(&mut self) {
+        let value = match &self.json_viewer_state {
+            Some(viewer) => viewer.get_selected_value(),
+            None => return,
+        };
+
+        let value = match value {
+            Some(v) => v,
+            None => return,
+        };
+
+        // Try command-line clipboard tools first (more reliable on Linux)
+        if self.copy_to_clipboard_cli(&value) {
+            let preview = if value.len() > 50 {
+                format!("{}...", &value[..50])
+            } else {
+                value.clone()
+            };
+            self.status_message = format!("Copied: {}", preview);
+            return;
+        }
+
+        // Fallback to arboard
+        if self.clipboard.is_none() {
+            match arboard::Clipboard::new() {
+                Ok(cb) => self.clipboard = Some(cb),
+                Err(e) => {
+                    self.error = Some(format!("Clipboard unavailable: {}", e));
+                    return;
+                }
+            }
+        }
+
+        if let Some(ref mut clipboard) = self.clipboard {
+            match clipboard.set_text(&value) {
+                Ok(_) => {
+                    let preview = if value.len() > 50 {
+                        format!("{}...", &value[..50])
+                    } else {
+                        value.clone()
+                    };
+                    self.status_message = format!("Copied: {}", preview);
+                }
+                Err(e) => {
+                    self.error = Some(format!("Failed to copy: {}", e));
+                }
+            }
+        }
+    }
+
+    /// Try to copy text using command-line clipboard tools
+    fn copy_to_clipboard_cli(&self, text: &str) -> bool {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+
+        // Try wl-copy (Wayland)
+        if let Ok(mut child) = Command::new("wl-copy")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            if let Some(mut stdin) = child.stdin.take() {
+                if stdin.write_all(text.as_bytes()).is_ok() {
+                    drop(stdin);
+                    if child.wait().map(|s| s.success()).unwrap_or(false) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        // Try xclip
+        if let Ok(mut child) = Command::new("xclip")
+            .args(["-selection", "clipboard"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            if let Some(mut stdin) = child.stdin.take() {
+                if stdin.write_all(text.as_bytes()).is_ok() {
+                    drop(stdin);
+                    if child.wait().map(|s| s.success()).unwrap_or(false) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        // Try xsel
+        if let Ok(mut child) = Command::new("xsel")
+            .args(["--clipboard", "--input"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            if let Some(mut stdin) = child.stdin.take() {
+                if stdin.write_all(text.as_bytes()).is_ok() {
+                    drop(stdin);
+                    if child.wait().map(|s| s.success()).unwrap_or(false) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        false
     }
 }
 

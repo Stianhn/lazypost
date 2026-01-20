@@ -293,6 +293,39 @@ impl JsonViewerState {
         }
     }
 
+    /// Get the JSON value at the currently selected path
+    pub fn get_selected_value(&self) -> Option<String> {
+        let selected = self.tree_state.selected();
+        if selected.is_empty() {
+            return None;
+        }
+
+        // Walk the JSON tree following the path
+        let value = self.get_value_at_path(&self.json, &selected)?;
+
+        // Serialize to pretty JSON
+        Some(serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()))
+    }
+
+    fn get_value_at_path(&self, value: &Value, path: &[JsonPathSegment]) -> Option<Value> {
+        if path.is_empty() {
+            return Some(value.clone());
+        }
+
+        match (&path[0], value) {
+            (JsonPathSegment::Root, v) => self.get_value_at_path(v, &path[1..]),
+            (JsonPathSegment::Key(key), Value::Object(map)) => {
+                let child = map.get(key)?;
+                self.get_value_at_path(child, &path[1..])
+            }
+            (JsonPathSegment::Index(idx), Value::Array(arr)) => {
+                let child = arr.get(*idx)?;
+                self.get_value_at_path(child, &path[1..])
+            }
+            _ => None,
+        }
+    }
+
     pub fn build_tree_items(&self) -> Vec<TreeItem<'static, JsonPathSegment>> {
         self.value_to_tree_items(&self.json, vec![JsonPathSegment::Root], JsonPathSegment::Root, None)
     }
