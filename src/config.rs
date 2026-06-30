@@ -47,6 +47,34 @@ pub struct PostmanConfig {
     pub api_key: String,
 }
 
+/// Postman personal API keys are prefixed with `PMAK-` and are 64 characters
+/// long. We validate the prefix and a plausible minimum length rather than an
+/// exact match, so an obviously wrong/truncated key is rejected up front while
+/// staying tolerant of any future length changes.
+const API_KEY_PREFIX: &str = "PMAK-";
+const API_KEY_MIN_LEN: usize = 40;
+
+/// Validate the shape of a Postman API key. Returns an error message suitable
+/// for showing to the user when the key is clearly malformed.
+pub fn validate_api_key(key: &str) -> Result<(), String> {
+    if key.is_empty() {
+        return Err("API key cannot be empty.".to_string());
+    }
+    if !key.starts_with(API_KEY_PREFIX) {
+        return Err(format!(
+            "API key should start with \"{API_KEY_PREFIX}\". Copy the full key from \
+             https://web.postman.co/settings/me/api-keys"
+        ));
+    }
+    if key.len() < API_KEY_MIN_LEN {
+        return Err(format!(
+            "API key looks too short ({} chars); expected ~64. It may have been truncated when pasted.",
+            key.len()
+        ));
+    }
+    Ok(())
+}
+
 impl Config {
     pub fn config_dir() -> Result<PathBuf> {
         let config_dir = dirs::config_dir()
@@ -89,6 +117,14 @@ impl Config {
 
         fs::write(&path, content)
             .with_context(|| format!("Failed to write config file: {}", path.display()))?;
+
+        // The config holds the Postman API key, so restrict it to the owner only.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+                .with_context(|| format!("Failed to set permissions on config file: {}", path.display()))?;
+        }
 
         Ok(())
     }
@@ -247,5 +283,33 @@ impl LocalEditsStore {
     /// Check if a request has a local edit
     pub fn has_edit(&self, collection_uid: &str, path: &[usize]) -> bool {
         self.edits.iter().any(|e| e.collection_uid == collection_uid && e.path == path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_api_key;
+
+    #[test]
+    fn accepts_well_formed_key() {
+        let key = format!("PMAK-{}", "a".repeat(59)); // 64 chars total
+        assert!(validate_api_key(&key).is_ok());
+    }
+
+    #[test]
+    fn rejects_empty() {
+        assert!(validate_api_key("").is_err());
+    }
+
+    #[test]
+    fn rejects_missing_prefix() {
+        let key = "a".repeat(64);
+        assert!(validate_api_key(&key).is_err());
+    }
+
+    #[test]
+    fn rejects_truncated_key() {
+        // The real-world failure: a 10-char truncated paste.
+        assert!(validate_api_key("PMAK-1234").is_err());
     }
 }

@@ -24,18 +24,44 @@ impl PostmanClient {
         }
     }
 
+    /// Read a response body, failing with Postman's error message when the
+    /// status is non-2xx instead of letting it fall through to a confusing
+    /// JSON parse error (e.g. a 401 from an invalid API key).
+    async fn read_success_body(response: reqwest::Response, action: &str) -> Result<String> {
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .with_context(|| format!("Failed to read {} response", action))?;
+
+        if !status.is_success() {
+            let message = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|v| {
+                    v.get("error")?
+                        .get("message")?
+                        .as_str()
+                        .map(|s| s.to_string())
+                })
+                .unwrap_or_else(|| body.chars().take(200).collect());
+            anyhow::bail!("Failed to {} ({}): {}", action, status, message);
+        }
+
+        Ok(body)
+    }
+
     pub async fn list_workspaces(&self) -> Result<Vec<WorkspaceInfo>> {
         let url = format!("{}/workspaces", BASE_URL);
-        let response: WorkspacesResponse = self
+        let response = self
             .client
             .get(&url)
             .header("X-Api-Key", &self.api_key)
             .send()
             .await
-            .context("Failed to fetch workspaces")?
-            .json()
-            .await
-            .context("Failed to parse workspaces response")?;
+            .context("Failed to fetch workspaces")?;
+        let body = Self::read_success_body(response, "fetch workspaces").await?;
+        let response: WorkspacesResponse =
+            serde_json::from_str(&body).context("Failed to parse workspaces response")?;
 
         Ok(response.workspaces)
     }
@@ -45,32 +71,30 @@ impl PostmanClient {
         if let Some(ws_id) = workspace_id {
             url = format!("{}?workspace={}", url, ws_id);
         }
-        let response: CollectionsResponse = self
+        let response = self
             .client
             .get(&url)
             .header("X-Api-Key", &self.api_key)
             .send()
             .await
-            .context("Failed to fetch collections")?
-            .json()
-            .await
-            .context("Failed to parse collections response")?;
+            .context("Failed to fetch collections")?;
+        let body = Self::read_success_body(response, "fetch collections").await?;
+        let response: CollectionsResponse =
+            serde_json::from_str(&body).context("Failed to parse collections response")?;
 
         Ok(response.collections)
     }
 
     pub async fn get_collection(&self, collection_uid: &str) -> Result<CollectionDetail> {
         let url = format!("{}/collections/{}", BASE_URL, collection_uid);
-        let response_text = self
+        let response = self
             .client
             .get(&url)
             .header("X-Api-Key", &self.api_key)
             .send()
             .await
-            .context("Failed to fetch collection details")?
-            .text()
-            .await
-            .context("Failed to read collection response")?;
+            .context("Failed to fetch collection details")?;
+        let response_text = Self::read_success_body(response, "fetch collection details").await?;
 
         let response: CollectionDetailResponse = serde_json::from_str(&response_text)
             .with_context(|| {
@@ -215,32 +239,32 @@ impl PostmanClient {
         if let Some(ws_id) = workspace_id {
             url = format!("{}?workspace={}", url, ws_id);
         }
-        let response: EnvironmentsResponse = self
+        let response = self
             .client
             .get(&url)
             .header("X-Api-Key", &self.api_key)
             .send()
             .await
-            .context("Failed to fetch environments")?
-            .json()
-            .await
-            .context("Failed to parse environments response")?;
+            .context("Failed to fetch environments")?;
+        let body = Self::read_success_body(response, "fetch environments").await?;
+        let response: EnvironmentsResponse =
+            serde_json::from_str(&body).context("Failed to parse environments response")?;
 
         Ok(response.environments)
     }
 
     pub async fn get_environment(&self, environment_uid: &str) -> Result<EnvironmentDetail> {
         let url = format!("{}/environments/{}", BASE_URL, environment_uid);
-        let response: EnvironmentDetailResponse = self
+        let response = self
             .client
             .get(&url)
             .header("X-Api-Key", &self.api_key)
             .send()
             .await
-            .context("Failed to fetch environment details")?
-            .json()
-            .await
-            .context("Failed to parse environment response")?;
+            .context("Failed to fetch environment details")?;
+        let body = Self::read_success_body(response, "fetch environment details").await?;
+        let response: EnvironmentDetailResponse =
+            serde_json::from_str(&body).context("Failed to parse environment response")?;
 
         Ok(response.environment)
     }

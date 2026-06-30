@@ -4,7 +4,7 @@ mod config;
 mod logging;
 mod ui;
 
-use std::io::{self, Write};
+use std::io;
 use std::time::Duration;
 use std::process::Command;
 use std::fs;
@@ -47,16 +47,19 @@ fn get_config() -> Result<Config> {
     println!("No configuration found. Please enter your Postman API key.");
     println!("You can find your API key at: https://web.postman.co/settings/me/api-keys");
     println!();
-    print!("API Key: ");
-    io::stdout().flush()?;
 
-    let mut api_key = String::new();
-    io::stdin().read_line(&mut api_key)?;
-    let api_key = api_key.trim().to_string();
+    let api_key = loop {
+        let api_key = rpassword::prompt_password("API Key: ")?;
+        let api_key = api_key.trim().to_string();
 
-    if api_key.is_empty() {
-        anyhow::bail!("API key cannot be empty");
-    }
+        match config::validate_api_key(&api_key) {
+            Ok(()) => break api_key,
+            Err(msg) => {
+                println!("{}", msg);
+                println!();
+            }
+        }
+    };
 
     let config = Config::new(api_key);
     config.save()?;
