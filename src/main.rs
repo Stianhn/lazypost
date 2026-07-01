@@ -137,6 +137,58 @@ async fn perform_save(
     Ok((updated, pending.edited.name))
 }
 
+/// Drive a spawned async task to completion while keeping the UI responsive and
+/// letting the user press Esc to cancel. Returns `Some(value)` on completion,
+/// or `None` if the task was cancelled or aborted.
+async fn run_cancellable<T: Send + 'static>(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut App,
+    handle: tokio::task::JoinHandle<T>,
+) -> Result<Option<T>> {
+    loop {
+        // Poll for Esc to cancel the in-flight task
+        if event::poll(Duration::from_millis(50))? {
+            if let Event::Key(key) = event::read()? {
+                if key.kind == KeyEventKind::Press && key.code == KeyCode::Esc {
+                    handle.abort();
+                    return Ok(None);
+                }
+            }
+        }
+
+        // Completed? Hand back the result
+        if handle.is_finished() {
+            return match handle.await {
+                Ok(value) => Ok(Some(value)),
+                Err(_) => Ok(None), // aborted or panicked
+            };
+        }
+
+        // Keep the loading popup visible while we wait
+        terminal.draw(|frame| ui::render(frame, app))?;
+    }
+}
+
+/// Execute the currently-selected request in a background task, showing the
+/// "Performing request..." popup and allowing Esc to cancel.
+async fn execute_request_cancellable(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut App,
+) -> Result<()> {
+    let resolved = match app.prepare_execution_request() {
+        Some(r) => r,
+        None => return Ok(()),
+    };
+    let client = app.client.clone();
+    let handle = tokio::spawn(async move { client.execute_request(&resolved).await });
+
+    match run_cancellable(terminal, app, handle).await? {
+        Some(result) => app.apply_execution_result(result),
+        None => app.cancel_execution(),
+    }
+    Ok(())
+}
+
 fn update_request_at_path(
     items: &mut Vec<api::Item>,
     path: &[usize],
@@ -383,9 +435,7 @@ async fn run_app(
                                         // Fill in {{params}} first, then confirm if needed
                                         if !app.start_params_input() && !app.start_execute_confirmation() {
                                             // No params, no confirmation needed, execute directly
-                                            app.request_executing = true;
-                                            terminal.draw(|frame| ui::render(frame, &mut app))?;
-                                            app.execute_current_request().await?;
+                                            execute_request_cancellable(terminal, &mut app).await?;
                                         }
                                     }
                                 }
@@ -402,9 +452,7 @@ async fn run_app(
                                     // Fill in {{params}} first, then confirm if needed
                                     if !app.start_params_input() && !app.start_execute_confirmation() {
                                         // No params, no confirmation needed, execute directly
-                                        app.request_executing = true;
-                                        terminal.draw(|frame| ui::render(frame, &mut app))?;
-                                        app.execute_current_request().await?;
+                                        execute_request_cancellable(terminal, &mut app).await?;
                                     }
                                 }
                             }
@@ -670,9 +718,7 @@ async fn run_app(
                                 // User confirmed, execute the request
                                 app.pending_execute = None;
                                 app.input_mode = InputMode::Normal;
-                                app.request_executing = true;
-                                terminal.draw(|frame| ui::render(frame, &mut app))?;
-                                app.execute_current_request().await?;
+                                execute_request_cancellable(terminal, &mut app).await?;
                             }
                             KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
                                 app.cancel_execute_confirmation();
@@ -700,9 +746,7 @@ async fn run_app(
                                 // Commit param values, then confirm (if destructive) or fire
                                 app.confirm_params();
                                 if !app.start_execute_confirmation() {
-                                    app.request_executing = true;
-                                    terminal.draw(|frame| ui::render(frame, &mut app))?;
-                                    app.execute_current_request().await?;
+                                    execute_request_cancellable(terminal, &mut app).await?;
                                 }
                             }
                             KeyCode::Up | KeyCode::BackTab => {
@@ -738,12 +782,15 @@ async fn run_app(
             app.load_workspace_data().await;
         }
 
-        // If collection is loading, perform the load
+        // If collection is loading, fetch it in the background so Esc can cancel
         if app.collection_loading.is_some() {
-            // Draw once to show the loading popup
-            terminal.draw(|frame| ui::render(frame, &mut app))?;
-            // Perform the async load
-            app.load_collection_data().await;
+            let (collection_uid, collection_name) = app.collection_load_target();
+            let client = app.client.clone();
+            let handle = tokio::spawn(async move { client.get_collection(&collection_uid).await });
+            match run_cancellable(terminal, &mut app, handle).await? {
+                Some(result) => app.apply_collection_result(result, collection_name),
+                None => app.cancel_collection_load(),
+            }
         }
 
         // If in saving mode, perform the save with cancellation support

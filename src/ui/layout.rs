@@ -886,6 +886,7 @@ fn render_collection_loading_popup(frame: &mut Frame, app: &App) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Loading ")
+        .title_bottom(Line::from(" Esc: Cancel ").right_aligned())
         .border_style(Style::default().fg(Color::Green))
         .style(Style::default().bg(Color::Black));
 
@@ -920,6 +921,7 @@ fn render_request_executing_popup(frame: &mut Frame) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Request ")
+        .title_bottom(Line::from(" Esc: Cancel ").right_aligned())
         .border_style(Style::default().fg(Color::Yellow))
         .style(Style::default().bg(Color::Black));
 

@@ -903,13 +903,20 @@ impl App {
         true
     }
 
-    pub async fn load_collection_data(&mut self) {
-        let (collection_uid, collection_name) = {
-            let flat_collection = &self.flat_collections[self.selected_collection_index];
-            (flat_collection.uid.clone(), flat_collection.name.clone())
-        };
+    /// The (uid, name) of the collection currently queued for loading. The
+    /// network fetch is run separately so it can be cancelled with Esc.
+    pub fn collection_load_target(&self) -> (String, String) {
+        let flat_collection = &self.flat_collections[self.selected_collection_index];
+        (flat_collection.uid.clone(), flat_collection.name.clone())
+    }
 
-        match self.client.get_collection(&collection_uid).await {
+    /// Apply the outcome of fetching a collection's detail.
+    pub fn apply_collection_result(
+        &mut self,
+        result: Result<CollectionDetail>,
+        collection_name: String,
+    ) {
+        match result {
             Ok(detail) => {
                 self.current_collection = Some(detail);
                 self.rebuild_variables();
@@ -930,6 +937,12 @@ impl App {
             }
         }
         self.collection_loading = None;
+    }
+
+    /// Reset loading state after the user cancels an in-flight collection load.
+    pub fn cancel_collection_load(&mut self) {
+        self.collection_loading = None;
+        self.status_message = String::from("Loading cancelled");
     }
 
 
@@ -1522,53 +1535,65 @@ impl App {
         self.input_mode = InputMode::Normal;
     }
 
-    pub async fn execute_current_request(&mut self) -> Result<()> {
-        if let Some(request) = &self.current_request {
-            self.loading = true;
-            self.status_message = String::from("Executing request...");
+    /// Build the fully variable-substituted request to execute, marking the app
+    /// as busy. Returns `None` when no request is selected. The actual network
+    /// call is run separately so it can be cancelled (see `main::run_cancellable`).
+    pub fn prepare_execution_request(&mut self) -> Option<Request> {
+        let request = self.current_request.as_ref()?;
 
-            // Create a copy of the request with variables substituted
-            let mut resolved_request = request.clone();
+        // Create a copy of the request with variables substituted
+        let mut resolved_request = request.clone();
 
-            // Substitute variables in URL
-            let url_str = resolved_request.url.to_string();
-            let resolved_url = self.substitute_variables(&url_str);
-            resolved_request.url = RequestUrl::Simple(resolved_url);
+        // Substitute variables in URL
+        let url_str = resolved_request.url.to_string();
+        let resolved_url = self.substitute_variables(&url_str);
+        resolved_request.url = RequestUrl::Simple(resolved_url);
 
-            // Substitute variables in headers
-            for header in &mut resolved_request.header {
-                header.key = self.substitute_variables(&header.key);
-                header.value = self.substitute_variables(&header.value);
-            }
+        // Substitute variables in headers
+        for header in &mut resolved_request.header {
+            header.key = self.substitute_variables(&header.key);
+            header.value = self.substitute_variables(&header.value);
+        }
 
-            // Substitute variables in body
-            if let Some(body) = &mut resolved_request.body {
-                if let Some(raw) = &body.raw {
-                    body.raw = Some(self.substitute_variables(raw));
-                }
-            }
-
-            match self.client.execute_request(&resolved_request).await {
-                Ok(response) => {
-                    // Try to parse response body as JSON for the viewer
-                    self.json_viewer_state = JsonViewerState::new(&response.body);
-                    self.response = Some(response);
-                    self.loading = false;
-                    self.request_executing = false;
-                    self.status_message = String::from("Request completed");
-                }
-                Err(e) => {
-                    self.loading = false;
-                    self.request_executing = false;
-                    // Include root cause in error message
-                    let error_msg = format!("{:#}", e);
-                    log_error("execute_request", &error_msg);
-                    self.error = Some(error_msg);
-                    self.status_message = String::from("Request failed");
-                }
+        // Substitute variables in body
+        if let Some(body) = &mut resolved_request.body {
+            if let Some(raw) = &body.raw {
+                body.raw = Some(self.substitute_variables(raw));
             }
         }
-        Ok(())
+
+        self.loading = true;
+        self.request_executing = true;
+        self.status_message = String::from("Executing request...");
+        Some(resolved_request)
+    }
+
+    /// Apply the outcome of a (possibly failed) request execution.
+    pub fn apply_execution_result(&mut self, result: Result<ExecutedResponse>) {
+        self.loading = false;
+        self.request_executing = false;
+        match result {
+            Ok(response) => {
+                // Try to parse response body as JSON for the viewer
+                self.json_viewer_state = JsonViewerState::new(&response.body);
+                self.response = Some(response);
+                self.status_message = String::from("Request completed");
+            }
+            Err(e) => {
+                // Include root cause in error message
+                let error_msg = format!("{:#}", e);
+                log_error("execute_request", &error_msg);
+                self.error = Some(error_msg);
+                self.status_message = String::from("Request failed");
+            }
+        }
+    }
+
+    /// Reset busy state after the user cancels an in-flight request.
+    pub fn cancel_execution(&mut self) {
+        self.loading = false;
+        self.request_executing = false;
+        self.status_message = String::from("Request cancelled");
     }
 
     pub fn store_local_edit(&mut self, edited: EditableRequest, item_index: usize) {
