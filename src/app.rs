@@ -1045,6 +1045,7 @@ impl App {
                         RequestUrl::Simple(local_edit.url.clone())
                     },
                     header: request.header.clone(),
+                    auth: request.auth.clone(),
                     body: if local_edit.body.is_empty() {
                         None
                     } else {
@@ -1569,6 +1570,17 @@ impl App {
             }
         }
 
+        // Substitute variables in auth parameter values (e.g. a `{{token}}`)
+        if let Some(auth) = &mut resolved_request.auth {
+            for params in auth.params.values_mut() {
+                for param in params.iter_mut() {
+                    if let serde_json::Value::String(s) = &param.value {
+                        param.value = serde_json::Value::String(self.substitute_variables(s));
+                    }
+                }
+            }
+        }
+
         self.loading = true;
         self.request_executing = true;
         self.status_message = String::from("Executing request...");
@@ -1613,6 +1625,7 @@ impl App {
                 RequestUrl::Simple(edited.url.clone())
             },
             header: self.current_request.as_ref().map(|r| r.header.clone()).unwrap_or_default(),
+            auth: self.current_request.as_ref().and_then(|r| r.auth.clone()),
             body: if edited.body.is_empty() {
                 None
             } else {
@@ -1956,6 +1969,7 @@ impl App {
                     RequestUrl::Simple(dialog.url)
                 },
                 header: vec![],
+                auth: None,
                 body: None,
                 description: None,
             },
@@ -2054,8 +2068,14 @@ impl App {
 
         match self.focused_pane {
             FocusedPane::Collections => {
-                for (i, collection) in self.collections.iter().enumerate() {
-                    if collection.name.to_lowercase().contains(&query) {
+                // Match against flat_collections so the indices line up with the
+                // rendered list and selection (flat_collections may prepend a
+                // Favorites header/entries, unlike self.collections).
+                for (i, flat_col) in self.flat_collections.iter().enumerate() {
+                    if flat_col.is_favorites_folder {
+                        continue;
+                    }
+                    if flat_col.name.to_lowercase().contains(&query) {
                         self.search_matches.push(i);
                     }
                 }

@@ -2,13 +2,50 @@ use anyhow::{Context, Result};
 use reqwest::Client;
 
 use super::models::{
-    CollectionDetail, CollectionDetailInfo, CollectionDetailResponse, CollectionInfo,
+    Auth, CollectionDetail, CollectionDetailInfo, CollectionDetailResponse, CollectionInfo,
     CollectionsResponse, EnvironmentDetail, EnvironmentDetailResponse, EnvironmentInfo,
     EnvironmentsResponse, ExecutedResponse, Item, Request, Variable, WorkspaceInfo,
     WorkspacesResponse,
 };
 
 const BASE_URL: &str = "https://api.getpostman.com";
+
+/// Apply a request's selected Postman authorization to the outgoing HTTP
+/// request. Values are assumed to already have `{{variables}}` substituted.
+/// Types we can't meaningfully apply here (e.g. `noauth`, `inherit`, `oauth2`)
+/// are left untouched.
+fn apply_auth(builder: reqwest::RequestBuilder, auth: &Auth) -> reqwest::RequestBuilder {
+    match auth.auth_type.as_str() {
+        "bearer" => {
+            if let Some(token) = auth.param("token") {
+                return builder.bearer_auth(token);
+            }
+        }
+        "basic" => {
+            let username = auth.param("username").unwrap_or_default();
+            let password = auth.param("password");
+            return builder.basic_auth(username, password);
+        }
+        "apikey" => {
+            let key = auth.param("key").unwrap_or_default();
+            let value = auth.param("value").unwrap_or_default();
+            if key.is_empty() {
+                return builder;
+            }
+            // `in` selects header (default) or query placement
+            let in_query = auth
+                .param("in")
+                .map(|loc| loc.eq_ignore_ascii_case("query"))
+                .unwrap_or(false);
+            if in_query {
+                return builder.query(&[(key, value)]);
+            }
+            return builder.header(key, value);
+        }
+        _ => {}
+    }
+    builder
+}
 
 #[derive(Clone)]
 pub struct PostmanClient {
@@ -126,6 +163,11 @@ impl PostmanClient {
                 continue;
             }
             req_builder = req_builder.header(&header.key, &header.value);
+        }
+
+        // Apply the request's selected authorization, if any
+        if let Some(auth) = &request.auth {
+            req_builder = apply_auth(req_builder, auth);
         }
 
         if let Some(body) = &request.body {

@@ -111,6 +111,7 @@ async fn perform_save(
                 api::RequestUrl::Simple(pending.edited.url.clone())
             },
             header: flat_item.request.as_ref().map(|r| r.header.clone()).unwrap_or_default(),
+            auth: flat_item.request.as_ref().and_then(|r| r.auth.clone()),
             body: if pending.edited.body.is_empty() {
                 None
             } else {

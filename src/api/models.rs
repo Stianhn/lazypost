@@ -66,10 +66,58 @@ pub struct Request {
     pub url: RequestUrl,
     #[serde(default)]
     pub header: Vec<Header>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<Auth>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub body: Option<RequestBody>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<serde_json::Value>,
+}
+
+/// Postman authorization on a request, e.g. `{ "type": "bearer", "bearer": [{ "key": "token", ... }] }`.
+/// The parameters for the active type live under a key matching `auth_type`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Auth {
+    #[serde(rename = "type")]
+    pub auth_type: String,
+    #[serde(flatten)]
+    pub params: std::collections::HashMap<String, Vec<AuthParam>>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AuthParam {
+    #[serde(default)]
+    pub key: String,
+    #[serde(default)]
+    pub value: serde_json::Value,
+    #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
+    pub param_type: Option<String>,
+}
+
+impl Auth {
+    /// The parameter list for the currently-selected auth type (e.g. the
+    /// `bearer` array when `auth_type` is `"bearer"`).
+    fn current_params(&self) -> Option<&Vec<AuthParam>> {
+        self.params.get(&self.auth_type)
+    }
+
+    /// Value of a named parameter within the active auth type, as a string.
+    pub fn param(&self, key: &str) -> Option<String> {
+        self.current_params()?
+            .iter()
+            .find(|p| p.key == key)
+            .map(|p| auth_value_to_string(&p.value))
+    }
+}
+
+/// Render an auth parameter value as a plain string (Postman stores these as
+/// strings, but tolerate other JSON scalars just in case).
+pub fn auth_value_to_string(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Null => String::new(),
+        other => other.to_string(),
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
