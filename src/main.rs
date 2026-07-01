@@ -432,6 +432,10 @@ async fn run_app(
                             KeyCode::Char('S') => {
                                 app.start_saving_edit();
                             }
+                            // Discard local edit for the selected request
+                            KeyCode::Char('D') => {
+                                app.start_delete_edit_confirmation();
+                            }
                             // Add new request
                             KeyCode::Char('a') => {
                                 app.start_new_request_dialog();
@@ -672,6 +676,17 @@ async fn run_app(
                             }
                             KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
                                 app.cancel_execute_confirmation();
+                            }
+                            _ => {}
+                        }
+                    }
+                    InputMode::DeleteEditConfirm => {
+                        match key.code {
+                            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                                app.confirm_delete_edit();
+                            }
+                            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                                app.cancel_delete_edit();
                             }
                             _ => {}
                         }

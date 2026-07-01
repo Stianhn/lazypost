@@ -35,6 +35,7 @@ pub enum InputMode {
     JsonSearch,
     ExecuteConfirm,
     ParamsInput,
+    DeleteEditConfirm,
 }
 
 /// A dialog for filling in `{{placeholder}}` values before firing a request.
@@ -59,6 +60,13 @@ pub struct PendingExecute {
     pub method: String,
     pub url: String,
     pub name: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingDeleteEdit {
+    pub name: String,
+    pub path: Vec<usize>,
+    pub item_index: usize,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -147,6 +155,7 @@ pub struct App {
     pub unsaved_edit: Option<(EditableRequest, usize)>, // (edited request, item_index)
     // Execute confirmation state
     pub pending_execute: Option<PendingExecute>,
+    pub pending_delete_edit: Option<PendingDeleteEdit>,
     // Request execution state
     pub request_executing: bool,
     // Parameter (placeholder) input state
@@ -209,6 +218,7 @@ impl App {
             collection_loading: None,
             unsaved_edit: None,
             pending_execute: None,
+            pending_delete_edit: None,
             request_executing: false,
             params_dialog: None,
             param_overrides: HashMap::new(),
@@ -1295,6 +1305,61 @@ impl App {
         self.pending_execute = None;
         self.input_mode = InputMode::Normal;
         self.status_message = String::from("Request cancelled");
+    }
+
+    /// Start confirmation to discard the local edit for the selected request.
+    /// Returns true if there is a local edit to discard (dialog shown).
+    pub fn start_delete_edit_confirmation(&mut self) -> bool {
+        let item = match self.flat_items.get(self.selected_item_index) {
+            Some(item) => item,
+            None => return false,
+        };
+        // Only requests (not folders) can have local edits
+        if item.request.is_none() {
+            return false;
+        }
+        let path = item.path.clone();
+        let name = item.name.clone();
+        if self.get_local_edit(&path).is_none() {
+            self.status_message = String::from("No local edit to discard");
+            return false;
+        }
+        self.pending_delete_edit = Some(PendingDeleteEdit {
+            name,
+            path,
+            item_index: self.selected_item_index,
+        });
+        self.input_mode = InputMode::DeleteEditConfirm;
+        self.status_message = String::from("Discard local edit? (y/n)");
+        true
+    }
+
+    /// Cancel the discard-local-edit confirmation
+    pub fn cancel_delete_edit(&mut self) {
+        self.pending_delete_edit = None;
+        self.input_mode = InputMode::Normal;
+        self.status_message = String::from("Discard cancelled");
+    }
+
+    /// Confirm discarding the local edit, reverting the preview to the external version
+    pub fn confirm_delete_edit(&mut self) {
+        if let Some(pending) = self.pending_delete_edit.take() {
+            self.clear_local_edit(&pending.path);
+            // Clear the unsaved marker if it referred to this request
+            if self.unsaved_edit.as_ref().map(|(_, idx)| *idx) == Some(pending.item_index) {
+                self.unsaved_edit = None;
+            }
+            // Revert the preview to the external version
+            if self.selected_item_index == pending.item_index {
+                let request = self.flat_items.get(pending.item_index)
+                    .and_then(|item| item.request.clone());
+                if let Some(request) = request {
+                    self.current_request = Some(request);
+                }
+            }
+            self.status_message = String::from("Local edit discarded");
+        }
+        self.input_mode = InputMode::Normal;
     }
 
     /// Unique `{{placeholder}}` keys referenced by the current request (URL,

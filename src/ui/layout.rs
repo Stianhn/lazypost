@@ -80,6 +80,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         render_execute_confirm_popup(frame, app);
     }
 
+    // Render discard-local-edit confirmation popup if active
+    if app.input_mode == InputMode::DeleteEditConfirm {
+        render_delete_edit_confirm_popup(frame, app);
+    }
+
     // Render parameter input dialog if active
     if app.input_mode == InputMode::ParamsInput {
         render_params_dialog(frame, app);
@@ -514,6 +519,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         InputMode::JsonSearch => "Enter: Confirm | Esc: Cancel | n/N: Next/Prev match | Type to search",
         InputMode::Saving => "Esc: Cancel",
         InputMode::ExecuteConfirm => "y/Enter: Execute | n/Esc: Cancel",
+        InputMode::DeleteEditConfirm => "y/Enter: Discard | n/Esc: Cancel",
         InputMode::ParamsInput => "↑/↓: Field | Enter: Send | Esc: Cancel | Type to edit",
         InputMode::EnvironmentSelect => "j/k: Nav | Enter: Select | Esc: Cancel",
         InputMode::VariablesView => if app.editing_variable.is_some() {
@@ -531,9 +537,9 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                 (FocusedPane::Collections, false, _) => "1-4: Pane | j/k: Nav | Enter: Load | f: Fav | v: Env | Ctrl+q: Quit",
                 (FocusedPane::Requests, true, _) => "1-4: Pane | j/k: Nav | Enter: Select | e: Exec | a: Add | f: Fav | v: Env | V: Vars | Ctrl+q: Quit",
                 (FocusedPane::Requests, false, _) => "1-4: Pane | j/k: Nav | Enter: Select | e: Exec | a: Add | f: Fav | v: Env | Ctrl+q: Quit",
-                (FocusedPane::Preview, true, true) => "1-4: Pane | e: Exec | E: Edit | S: Save* | v: Env | V: Vars | Ctrl+q: Quit",
+                (FocusedPane::Preview, true, true) => "1-4: Pane | e: Exec | E: Edit | S: Save* | D: Discard | v: Env | V: Vars | Ctrl+q: Quit",
                 (FocusedPane::Preview, true, false) => "1-4: Pane | e: Exec | E: Edit | v: Env | V: Vars | Ctrl+q: Quit",
-                (FocusedPane::Preview, false, true) => "1-4: Pane | e: Exec | E: Edit | S: Save* | v: Env | Ctrl+q: Quit",
+                (FocusedPane::Preview, false, true) => "1-4: Pane | e: Exec | E: Edit | S: Save* | D: Discard | v: Env | Ctrl+q: Quit",
                 (FocusedPane::Preview, false, false) => "1-4: Pane | e: Exec | E: Edit | v: Env | Ctrl+q: Quit",
                 (FocusedPane::Response, true, _) => if app.json_viewer_state.is_some() {
                     "j/k: Nav | h/l: Fold | H/L: Fold All | /: Search | n/N: Match | y: Copy | v: Env | Ctrl+q: Quit"
@@ -1247,6 +1253,60 @@ fn render_execute_confirm_popup(frame: &mut Frame, app: &App) {
         .borders(Borders::ALL)
         .title(" Confirm Request ")
         .border_style(Style::default().fg(title_color))
+        .style(Style::default().bg(Color::Black));
+
+    let paragraph = Paragraph::new(content).block(block);
+
+    frame.render_widget(paragraph, popup_area);
+}
+
+fn render_delete_edit_confirm_popup(frame: &mut Frame, app: &App) {
+    let pending = match &app.pending_delete_edit {
+        Some(p) => p,
+        None => return,
+    };
+
+    let area = frame.area();
+
+    let name_display = if pending.name.len() > 50 {
+        format!("{}...", &pending.name[..47])
+    } else {
+        pending.name.clone()
+    };
+
+    let popup_width = 60u16.min(area.width.saturating_sub(4));
+    let popup_height = 9u16;
+
+    let x = (area.width.saturating_sub(popup_width)) / 2;
+    let y = (area.height.saturating_sub(popup_height)) / 2;
+
+    let popup_area = Rect::new(x, y, popup_width.min(area.width), popup_height.min(area.height));
+
+    frame.render_widget(Clear, popup_area);
+
+    let content = vec![
+        Line::from(""),
+        Line::from("  Discard local edit?"),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Name: ", Style::default().fg(Color::DarkGray)),
+            Span::raw(&name_display),
+        ]),
+        Line::from(Span::styled(
+            "  This reverts to the version from Postman.",
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  [y/Enter] Yes   [n/Esc] No",
+            Style::default().fg(Color::Cyan),
+        )),
+    ];
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Discard Local Edit ")
+        .border_style(Style::default().fg(Color::Red))
         .style(Style::default().bg(Color::Black));
 
     let paragraph = Paragraph::new(content).block(block);
