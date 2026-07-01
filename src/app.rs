@@ -1611,14 +1611,16 @@ impl App {
         let item = self.flat_items.get(self.selected_item_index)?;
         let request = item.request.as_ref()?;
 
-        let editable = EditableRequest {
+        // Prefer an existing local edit as the starting point so previous
+        // unsaved edits are preserved; fall back to the external request.
+        let editable = self.get_local_edit(&item.path).unwrap_or_else(|| EditableRequest {
             name: item.name.clone(),
             method: request.method.clone(),
             url: request.url.to_string(),
             body: request.body.as_ref()
                 .and_then(|b| b.raw.clone())
                 .unwrap_or_default(),
-        };
+        });
 
         Some((editable, self.selected_item_index))
     }
