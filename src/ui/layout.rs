@@ -143,7 +143,7 @@ fn get_title_with_number(title: &str, number: u8, focused: bool) -> String {
     }
 }
 
-fn render_collections_pane(frame: &mut Frame, app: &App, area: Rect) {
+fn render_collections_pane(frame: &mut Frame, app: &mut App, area: Rect) {
     let is_focused = app.focused_pane == FocusedPane::Collections;
     let is_searching = app.input_mode == InputMode::Search
         && !app.search_query.is_empty()
@@ -207,6 +207,25 @@ fn render_collections_pane(frame: &mut Frame, app: &App, area: Rect) {
         "Collections".to_string()
     };
 
+    // Position of the selected collection within the (filtered) list, so the
+    // view scrolls to keep it visible when the list is taller than the pane.
+    let selected_pos = app
+        .flat_collections
+        .iter()
+        .enumerate()
+        .filter(|(i, flat_col)| {
+            if is_searching {
+                if flat_col.is_favorites_folder {
+                    false
+                } else {
+                    app.search_matches.contains(i)
+                }
+            } else {
+                true
+            }
+        })
+        .position(|(i, _)| i == app.selected_collection_index);
+
     let border_color = get_border_color(app, FocusedPane::Collections);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -214,10 +233,13 @@ fn render_collections_pane(frame: &mut Frame, app: &App, area: Rect) {
         .title(get_title_with_number(&title, 1, is_focused));
 
     let list = List::new(items).block(block);
-    frame.render_widget(list, area);
+    // Reuse the persistent scroll offset; only update which row is selected so
+    // the view stays put until the selection reaches an edge.
+    app.collections_list_state.select(selected_pos);
+    frame.render_stateful_widget(list, area, &mut app.collections_list_state);
 }
 
-fn render_requests_pane(frame: &mut Frame, app: &App, area: Rect) {
+fn render_requests_pane(frame: &mut Frame, app: &mut App, area: Rect) {
     let is_focused = app.focused_pane == FocusedPane::Requests;
     let is_searching = app.input_mode == InputMode::Search
         && !app.search_query.is_empty()
@@ -294,6 +316,21 @@ fn render_requests_pane(frame: &mut Frame, app: &App, area: Rect) {
         base_title
     };
 
+    // Position of the selected request within the (filtered) list, so the view
+    // scrolls to keep it visible when the list is taller than the pane.
+    let selected_pos = app
+        .flat_items
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| {
+            if is_searching {
+                app.search_match_paths.contains(&item.path)
+            } else {
+                true
+            }
+        })
+        .position(|(i, _)| i == app.selected_item_index);
+
     let border_color = get_border_color(app, FocusedPane::Requests);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -301,7 +338,10 @@ fn render_requests_pane(frame: &mut Frame, app: &App, area: Rect) {
         .title(get_title_with_number(&title, 2, is_focused));
 
     let list = List::new(items).block(block);
-    frame.render_widget(list, area);
+    // Reuse the persistent scroll offset; only update which row is selected so
+    // the view stays put until the selection reaches an edge.
+    app.requests_list_state.select(selected_pos);
+    frame.render_stateful_widget(list, area, &mut app.requests_list_state);
 }
 
 fn render_preview_pane(frame: &mut Frame, app: &App, area: Rect) {

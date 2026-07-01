@@ -387,6 +387,25 @@ async fn run_app(
                                     app.move_up();
                                 }
                             }
+                            // Half-page jump down/up (vim Ctrl-D / Ctrl-U)
+                            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                if app.focused_pane == FocusedPane::Response && app.json_viewer_state.is_some() {
+                                    for _ in 0..10 {
+                                        app.json_viewer_down();
+                                    }
+                                } else {
+                                    app.jump_down();
+                                }
+                            }
+                            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                if app.focused_pane == FocusedPane::Response && app.json_viewer_state.is_some() {
+                                    for _ in 0..10 {
+                                        app.json_viewer_up();
+                                    }
+                                } else {
+                                    app.jump_up();
+                                }
+                            }
                             // JSON viewer collapse/expand (Response pane only)
                             KeyCode::Char('h') | KeyCode::Left => {
                                 if app.focused_pane == FocusedPane::Response && app.json_viewer_state.is_some() {

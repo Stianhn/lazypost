@@ -3,6 +3,7 @@ use crate::config::{CacheStore, Config, LocalEditsStore, ParamValuesStore};
 use crate::logging::log_error;
 use crate::ui::JsonViewerState;
 use anyhow::Result;
+use ratatui::widgets::ListState;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -119,6 +120,10 @@ pub struct App {
     pub current_request: Option<Request>,
     pub response: Option<ExecutedResponse>,
     pub json_viewer_state: Option<JsonViewerState>,
+    // Persistent scroll state for the collection/request lists so the view only
+    // scrolls when the selection reaches the top or bottom edge of the pane.
+    pub collections_list_state: ListState,
+    pub requests_list_state: ListState,
     pub loading: bool,
     pub error: Option<String>,
     pub status_message: String,
@@ -188,6 +193,8 @@ impl App {
             current_request: None,
             response: None,
             json_viewer_state: None,
+            collections_list_state: ListState::default(),
+            requests_list_state: ListState::default(),
             loading: false,
             error: None,
             status_message: String::from("1/2/3: Switch pane | j/k: Navigate | Enter: Select | f: Favorite | Ctrl+q: Quit"),
@@ -1713,6 +1720,49 @@ impl App {
         });
 
         Some((editable, self.selected_item_index))
+    }
+
+    /// Number of items Ctrl-U / Ctrl-D jump through at once (vim-style half page).
+    const JUMP_STEP: usize = 10;
+
+    pub fn jump_up(&mut self) {
+        match self.focused_pane {
+            FocusedPane::Collections => {
+                self.selected_collection_index =
+                    self.selected_collection_index.saturating_sub(Self::JUMP_STEP);
+            }
+            FocusedPane::Requests => {
+                if !self.flat_items.is_empty() {
+                    self.selected_item_index =
+                        self.selected_item_index.saturating_sub(Self::JUMP_STEP);
+                    self.update_preview_from_selection();
+                    self.save_last_state();
+                }
+            }
+            FocusedPane::Preview | FocusedPane::Response => {}
+        }
+    }
+
+    pub fn jump_down(&mut self) {
+        match self.focused_pane {
+            FocusedPane::Collections => {
+                if !self.flat_collections.is_empty() {
+                    let max = self.flat_collections.len() - 1;
+                    self.selected_collection_index =
+                        (self.selected_collection_index + Self::JUMP_STEP).min(max);
+                }
+            }
+            FocusedPane::Requests => {
+                if !self.flat_items.is_empty() {
+                    let max = self.flat_items.len() - 1;
+                    self.selected_item_index =
+                        (self.selected_item_index + Self::JUMP_STEP).min(max);
+                    self.update_preview_from_selection();
+                    self.save_last_state();
+                }
+            }
+            FocusedPane::Preview | FocusedPane::Response => {}
+        }
     }
 
     pub fn move_up(&mut self) {
