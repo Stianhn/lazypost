@@ -190,6 +190,23 @@ async fn execute_request_cancellable(
     Ok(())
 }
 
+/// Kick off a non-blocking background refresh of the currently-loaded
+/// collection. The result is polled by the main loop, so the user can keep
+/// browsing and using the (cached) requests while it fetches.
+fn spawn_collection_refresh(app: &mut App) {
+    let uid = match &app.current_collection_uid {
+        Some(uid) => uid.clone(),
+        None => return,
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    let client = app.client.clone();
+    let fetch_uid = uid.clone();
+    tokio::spawn(async move {
+        let _ = tx.send(client.get_collection(&fetch_uid).await);
+    });
+    app.pending_collection_refresh = Some(app::CollectionRefresh { uid, rx });
+}
+
 fn update_request_at_path(
     items: &mut Vec<api::Item>,
     path: &[usize],
@@ -344,6 +361,22 @@ async fn run_app(
             }
         }
 
+        // Apply a background collection refresh once it arrives (non-blocking),
+        // so switching collections stays instant while requests update in place.
+        if let Some(refresh) = &app.pending_collection_refresh {
+            match refresh.rx.try_recv() {
+                Ok(result) => {
+                    let uid = refresh.uid.clone();
+                    app.pending_collection_refresh = None;
+                    app.apply_collection_refresh(uid, result);
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    app.pending_collection_refresh = None;
+                }
+            }
+        }
+
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind != KeyEventKind::Press {
@@ -438,7 +471,11 @@ async fn run_app(
                             // Enter key behavior depends on focused pane
                             KeyCode::Enter => match app.focused_pane {
                                 FocusedPane::Collections => {
-                                    app.start_collection_load();
+                                    // Cached collections display instantly and refresh in the
+                                    // background; uncached ones use the blocking fetch below.
+                                    if app.start_collection_load() == app::CollectionLoad::Cached {
+                                        spawn_collection_refresh(&mut app);
+                                    }
                                 }
                                 FocusedPane::Requests => {
                                     if let Some(item) = app.flat_items.get(app.selected_item_index) {

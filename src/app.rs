@@ -70,6 +70,24 @@ pub struct PendingDeleteEdit {
     pub item_index: usize,
 }
 
+/// An in-flight background refresh of a collection's requests. The fetch runs on
+/// a spawned task and delivers its result over `rx`, polled by the main loop.
+pub struct CollectionRefresh {
+    pub uid: String,
+    pub rx: std::sync::mpsc::Receiver<Result<CollectionDetail>>,
+}
+
+/// Outcome of selecting a collection to load, telling the caller how to proceed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CollectionLoad {
+    /// Nothing to fetch (empty list, or a Favorites folder was toggled).
+    None,
+    /// A cached copy was shown instantly; refresh it in the background.
+    Cached,
+    /// Not cached — the blocking (cancellable) fetch should run.
+    Fetch,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum DialogStep {
     Name,
@@ -113,6 +131,14 @@ pub struct App {
     pub flat_collections: Vec<FlatCollection>,
     pub selected_collection_index: usize,
     pub current_collection: Option<CollectionDetail>,
+    /// UID of the collection whose detail is currently loaded, so background
+    /// refreshes can tell whether the user is still viewing it.
+    pub current_collection_uid: Option<String>,
+    /// In-memory (session-only) cache of loaded collection details, keyed by
+    /// collection UID. Never persisted to disk — details may hold secrets.
+    pub collection_cache: HashMap<String, CollectionDetail>,
+    /// A background refresh of a collection's requests that is in flight.
+    pub pending_collection_refresh: Option<CollectionRefresh>,
     pub flat_items: Vec<FlatItem>,
     pub selected_item_index: usize,
     pub expanded_folders: HashSet<Vec<usize>>,
@@ -186,6 +212,9 @@ impl App {
             flat_collections: Vec::new(),
             selected_collection_index: 0,
             current_collection: Option::None,
+            current_collection_uid: None,
+            collection_cache: HashMap::new(),
+            pending_collection_refresh: None,
             flat_items: Vec::new(),
             selected_item_index: 0,
             expanded_folders: HashSet::new(),
@@ -892,9 +921,9 @@ impl App {
         }
     }
 
-    pub fn start_collection_load(&mut self) -> bool {
+    pub fn start_collection_load(&mut self) -> CollectionLoad {
         if self.flat_collections.is_empty() {
-            return false;
+            return CollectionLoad::None;
         }
 
         let flat_collection = &self.flat_collections[self.selected_collection_index];
@@ -902,12 +931,39 @@ impl App {
         // If it's the favorites folder, toggle it instead of loading
         if flat_collection.is_favorites_folder {
             self.toggle_collections_favorites_folder();
-            return false;
+            return CollectionLoad::None;
         }
 
-        let collection_name = flat_collection.name.clone();
-        self.collection_loading = Some(collection_name);
-        true
+        let uid = flat_collection.uid.clone();
+        let name = flat_collection.name.clone();
+
+        // Show the cached copy instantly and refresh it in the background.
+        if let Some(detail) = self.collection_cache.get(&uid).cloned() {
+            self.apply_collection_detail(detail, uid);
+            self.status_message = format!("{} (cached, refreshing…)", name);
+            return CollectionLoad::Cached;
+        }
+
+        // Not cached — fall back to the blocking, cancellable fetch.
+        self.collection_loading = Some(name);
+        CollectionLoad::Fetch
+    }
+
+    /// Make a freshly-loaded collection detail the active one: cache it, rebuild
+    /// the request tree, and focus the Requests pane. Shared by the cached,
+    /// blocking-fetch, and startup paths.
+    fn apply_collection_detail(&mut self, detail: CollectionDetail, uid: String) {
+        self.collection_cache.insert(uid.clone(), detail.clone());
+        self.current_collection = Some(detail);
+        self.current_collection_uid = Some(uid);
+        self.rebuild_variables();
+        self.expanded_folders.clear();
+        self.flatten_items();
+        self.selected_item_index = 0;
+        self.current_request = None;
+        self.response = None;
+        self.set_focus(FocusedPane::Requests);
+        self.save_last_state();
     }
 
     /// The (uid, name) of the collection currently queued for loading. The
@@ -917,7 +973,7 @@ impl App {
         (flat_collection.uid.clone(), flat_collection.name.clone())
     }
 
-    /// Apply the outcome of fetching a collection's detail.
+    /// Apply the outcome of a blocking (first-time) collection fetch.
     pub fn apply_collection_result(
         &mut self,
         result: Result<CollectionDetail>,
@@ -925,15 +981,8 @@ impl App {
     ) {
         match result {
             Ok(detail) => {
-                self.current_collection = Some(detail);
-                self.rebuild_variables();
-                self.expanded_folders.clear();
-                self.flatten_items();
-                self.selected_item_index = 0;
-                self.current_request = None;
-                self.response = None;
-                self.set_focus(FocusedPane::Requests);
-                self.save_last_state();
+                let uid = self.collection_load_target().0;
+                self.apply_collection_detail(detail, uid);
                 self.status_message = format!("Loaded {}", collection_name);
             }
             Err(e) => {
@@ -944,6 +993,33 @@ impl App {
             }
         }
         self.collection_loading = None;
+    }
+
+    /// Apply a background refresh result. Always updates the cache; only touches
+    /// the visible request tree when the user is still on that collection, and
+    /// preserves their expanded folders and selection so browsing isn't disrupted.
+    pub fn apply_collection_refresh(&mut self, uid: String, result: Result<CollectionDetail>) {
+        match result {
+            Ok(detail) => {
+                self.collection_cache.insert(uid.clone(), detail.clone());
+                if self.current_collection_uid.as_deref() == Some(uid.as_str()) {
+                    self.current_collection = Some(detail);
+                    self.rebuild_variables();
+                    self.flatten_items();
+                    if !self.flat_items.is_empty()
+                        && self.selected_item_index >= self.flat_items.len()
+                    {
+                        self.selected_item_index = self.flat_items.len() - 1;
+                    }
+                    self.status_message = String::from("Requests updated");
+                }
+            }
+            Err(e) => {
+                // Keep the cached copy on screen; a stale-but-usable view beats
+                // disrupting the user with an error mid-browse.
+                log_error("collection_refresh", &e.to_string());
+            }
+        }
     }
 
     /// Reset loading state after the user cancels an in-flight collection load.
@@ -1257,6 +1333,14 @@ impl App {
         if let Some(res) = data.collection_detail {
             match res {
                 Ok(detail) => {
+                    // Seed the session cache so returning to this collection is instant.
+                    if let Some(state) = &self.config.last_state {
+                        if !state.collection_uid.is_empty() {
+                            self.collection_cache
+                                .insert(state.collection_uid.clone(), detail.clone());
+                            self.current_collection_uid = Some(state.collection_uid.clone());
+                        }
+                    }
                     self.current_collection = Some(detail);
                     self.rebuild_variables();
                     self.expanded_folders.clear();
