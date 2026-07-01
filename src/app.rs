@@ -1,5 +1,5 @@
 use crate::api::{CollectionDetail, CollectionInfo, EnvironmentDetail, EnvironmentInfo, ExecutedResponse, Item, PostmanClient, Request, RequestItem, RequestUrl, WorkspaceInfo};
-use crate::config::{Config, LocalEditsStore};
+use crate::config::{CacheStore, Config, LocalEditsStore, ParamValuesStore};
 use crate::logging::log_error;
 use crate::ui::JsonViewerState;
 use anyhow::Result;
@@ -34,6 +34,18 @@ pub enum InputMode {
     WorkspaceSelect,
     JsonSearch,
     ExecuteConfirm,
+    ParamsInput,
+}
+
+/// A dialog for filling in `{{placeholder}}` values before firing a request.
+#[derive(Debug, Clone)]
+pub struct ParamsDialog {
+    /// (key, editable value) for each unique placeholder found in the request.
+    pub params: Vec<(String, String)>,
+    /// Index of the currently focused field.
+    pub selected: usize,
+    /// Cursor byte-offset within the focused field's value.
+    pub cursor_position: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -137,6 +149,12 @@ pub struct App {
     pub pending_execute: Option<PendingExecute>,
     // Request execution state
     pub request_executing: bool,
+    // Parameter (placeholder) input state
+    pub params_dialog: Option<ParamsDialog>,
+    // Per-request placeholder overrides applied during substitution (highest priority)
+    pub param_overrides: HashMap<String, String>,
+    // Persisted placeholder values entered in the params dialog, keyed by request
+    pub param_values: ParamValuesStore,
     // Clipboard (kept alive to persist content on Linux)
     clipboard: Option<arboard::Clipboard>,
 }
@@ -163,7 +181,7 @@ impl App {
             json_viewer_state: None,
             loading: false,
             error: None,
-            status_message: String::from("1/2/3: Switch pane | j/k: Navigate | Enter: Select | f: Favorite | q: Quit"),
+            status_message: String::from("1/2/3: Switch pane | j/k: Navigate | Enter: Select | f: Favorite | Ctrl+q: Quit"),
             input_mode: InputMode::Normal,
             new_request_dialog: None,
             pending_save: None,
@@ -192,6 +210,9 @@ impl App {
             unsaved_edit: None,
             pending_execute: None,
             request_executing: false,
+            params_dialog: None,
+            param_overrides: HashMap::new(),
+            param_values: ParamValuesStore::load().unwrap_or_default(),
             clipboard: None,
         }
     }
@@ -342,86 +363,13 @@ impl App {
 
     fn update_status_for_pane(&mut self) {
         self.status_message = match self.focused_pane {
-            FocusedPane::Collections => String::from("1-4: Switch pane | j/k: Navigate | Enter: Load | /: Search | q: Quit"),
-            FocusedPane::Requests => String::from("1-4: Switch pane | j/k: Navigate | Enter: Select | e: Execute | a: Add | /: Search | q: Quit"),
-            FocusedPane::Preview => String::from("1-4: Switch pane | e: Execute | q: Quit"),
-            FocusedPane::Response => String::from("1-4: Switch pane | q: Quit"),
+            FocusedPane::Collections => String::from("1-4: Switch pane | j/k: Navigate | Enter: Load | /: Search | Ctrl+q: Quit"),
+            FocusedPane::Requests => String::from("1-4: Switch pane | j/k: Navigate | Enter: Select | e: Execute | a: Add | /: Search | Ctrl+q: Quit"),
+            FocusedPane::Preview => String::from("1-4: Switch pane | e: Execute | Ctrl+q: Quit"),
+            FocusedPane::Response => String::from("1-4: Switch pane | Ctrl+q: Quit"),
         };
     }
 
-    pub async fn load_collections(&mut self) -> Result<()> {
-        self.loading = true;
-        self.error = None;
-        self.status_message = String::from("Loading...");
-
-        // Load workspaces first
-        match self.client.list_workspaces().await {
-            Ok(workspaces) => {
-                self.workspaces = workspaces;
-
-                // Restore saved workspace selection before loading collections
-                if let Some(ref state) = self.config.last_state {
-                    log_error("restore_workspace", &format!(
-                        "last_state.workspace_id={:?}, workspaces.len={}",
-                        state.workspace_id,
-                        self.workspaces.len()
-                    ));
-                    if let Some(ref saved_ws_id) = state.workspace_id {
-                        if let Some(ws_index) = self.workspaces.iter().position(|w| &w.id == saved_ws_id) {
-                            self.selected_workspace_index = Some(ws_index);
-                            log_error("restore_workspace", &format!("Restored to index {}", ws_index));
-                        } else {
-                            log_error("restore_workspace", &format!(
-                                "saved workspace_id '{}' not found in {} workspaces",
-                                saved_ws_id,
-                                self.workspaces.len()
-                            ));
-                        }
-                    }
-                } else {
-                    log_error("restore_workspace", "No last_state in config");
-                }
-            }
-            Err(e) => {
-                log_error("load_workspaces", &e.to_string());
-                // Don't fail - workspaces are optional
-            }
-        }
-
-        // Get the workspace ID for filtering
-        let workspace_id = self.get_selected_workspace_id();
-
-        // Load collections (filtered by workspace if selected)
-        match self.client.list_collections(workspace_id.as_deref()).await {
-            Ok(collections) => {
-                self.collections = collections;
-                self.sort_collections();
-                self.flatten_collections();
-                self.loading = false;
-                self.status_message = format!("Loaded {} collections", self.collections.len());
-            }
-            Err(e) => {
-                self.loading = false;
-                let error_msg = e.to_string();
-                log_error("load_collections", &error_msg);
-                self.error = Some(error_msg);
-                self.status_message = String::from("Failed to load collections");
-            }
-        }
-
-        // Also load environments (filtered by workspace if selected)
-        match self.client.list_environments(workspace_id.as_deref()).await {
-            Ok(environments) => {
-                self.environments = environments;
-                // Don't auto-select here - restore_last_state will handle it
-            }
-            Err(e) => {
-                log_error("load_environments", &e.to_string());
-                // Don't fail - environments are optional
-            }
-        }
-        Ok(())
-    }
 
     fn get_selected_workspace_id(&self) -> Option<String> {
         self.selected_workspace_index
@@ -473,6 +421,11 @@ impl App {
 
     pub fn substitute_variables(&self, text: &str) -> String {
         let mut result = text.to_string();
+        // Per-request placeholder overrides win over environment/collection vars.
+        for (key, value) in &self.param_overrides {
+            let pattern = format!("{{{{{}}}}}", key);
+            result = result.replace(&pattern, value);
+        }
         for (key, value) in &self.variables {
             let pattern = format!("{{{{{}}}}}", key);
             result = result.replace(&pattern, value);
@@ -969,48 +922,6 @@ impl App {
         self.collection_loading = None;
     }
 
-    // Keep the old method for restore_last_state which needs synchronous behavior
-    pub async fn load_collection_detail(&mut self) -> Result<()> {
-        if self.flat_collections.is_empty() {
-            return Ok(());
-        }
-
-        let flat_collection = &self.flat_collections[self.selected_collection_index];
-
-        // If it's the favorites folder, toggle it instead of loading
-        if flat_collection.is_favorites_folder {
-            self.toggle_collections_favorites_folder();
-            return Ok(());
-        }
-
-        let collection_uid = flat_collection.uid.clone();
-        let collection_name = flat_collection.name.clone();
-        self.loading = true;
-        self.status_message = format!("Loading {}...", collection_name);
-
-        match self.client.get_collection(&collection_uid).await {
-            Ok(detail) => {
-                self.current_collection = Some(detail);
-                self.rebuild_variables(); // Rebuild variables with new collection
-                self.expanded_folders.clear();
-                self.flatten_items();
-                self.selected_item_index = 0;
-                self.current_request = None;
-                self.response = None;
-                self.loading = false;
-                self.set_focus(FocusedPane::Requests);
-                self.save_last_state();
-            }
-            Err(e) => {
-                self.loading = false;
-                let error_msg = e.to_string();
-                log_error("load_collection_detail", &error_msg);
-                self.error = Some(error_msg);
-                self.status_message = String::from("Failed to load collection");
-            }
-        }
-        Ok(())
-    }
 
     pub fn flatten_items(&mut self) {
         self.flat_items.clear();
@@ -1171,62 +1082,172 @@ impl App {
         let _ = self.config.save();
     }
 
-    pub async fn restore_last_state(&mut self) -> Result<()> {
-        let last_state = match &self.config.last_state {
-            Some(state) => state.clone(),
-            None => return Ok(()),
-        };
-
-        // Workspace is already restored in load_collections()
-
-        // Restore environment
-        if let Some(env_uid) = &last_state.environment_uid {
-            if let Some(env_index) = self.environments.iter().position(|e| &e.uid == env_uid) {
-                self.selected_environment_index = Some(env_index);
-                self.load_selected_environment().await;
-            }
-        }
-
-        // Skip collection restore if no collection was saved
-        if last_state.collection_uid.is_empty() {
-            return Ok(());
-        }
-
-        // Find the collection in flat_collections by UID
-        let collection_index = self.flat_collections
-            .iter()
-            .position(|c| !c.is_favorites_folder && c.uid == last_state.collection_uid);
-
-        let collection_index = match collection_index {
-            Some(idx) => idx,
-            None => return Ok(()), // Collection no longer exists
-        };
-
-        self.selected_collection_index = collection_index;
-
-        // Load the collection
-        self.load_collection_detail().await?;
-
-        // Find the request by path
+    /// Select the saved request by path within the (already populated)
+    /// flat_items, expanding folders if needed. Shared by restore paths.
+    fn restore_request_path(&mut self, request_path: &[usize]) {
         if let Some(item_index) = self.flat_items
             .iter()
-            .position(|item| item.path == last_state.request_path)
+            .position(|item| item.path == request_path)
         {
             self.selected_item_index = item_index;
             self.update_preview_from_selection();
         } else {
-            // Path doesn't exist, try to expand folders to find it
-            self.expand_to_path(&last_state.request_path);
+            // Path doesn't exist yet, try to expand folders to find it
+            self.expand_to_path(request_path);
             if let Some(item_index) = self.flat_items
                 .iter()
-                .position(|item| item.path == last_state.request_path)
+                .position(|item| item.path == request_path)
             {
                 self.selected_item_index = item_index;
                 self.update_preview_from_selection();
             }
         }
+    }
 
-        Ok(())
+    /// Populate the lists from the on-disk cache and restore the saved
+    /// selection, all without any network I/O. Used to paint the first frame
+    /// instantly; request/variable detail still loads via the background
+    /// refresh. No-op when the cache is empty (e.g. first run).
+    pub fn populate_from_cache(&mut self, cache: CacheStore) {
+        if cache.workspaces.is_empty() && cache.collections.is_empty() && cache.environments.is_empty() {
+            return;
+        }
+
+        self.workspaces = cache.workspaces;
+        self.collections = cache.collections;
+        self.environments = cache.environments;
+
+        // Restore the saved workspace selection (used to filter / highlight).
+        if let Some(state) = &self.config.last_state {
+            if let Some(ws_id) = &state.workspace_id {
+                self.selected_workspace_index =
+                    self.workspaces.iter().position(|w| &w.id == ws_id);
+            }
+        }
+
+        self.sort_collections();
+        self.flatten_collections();
+
+        // Restore collection/environment selection indices from the cached
+        // lists (their detail contents are fetched live by the refresh).
+        if let Some(state) = self.config.last_state.clone() {
+            if let Some(env_uid) = &state.environment_uid {
+                self.selected_environment_index =
+                    self.environments.iter().position(|e| &e.uid == env_uid);
+            }
+            if !state.collection_uid.is_empty() {
+                if let Some(idx) = self.flat_collections.iter().position(|c| {
+                    !c.is_favorites_folder && c.uid == state.collection_uid
+                }) {
+                    self.selected_collection_index = idx;
+                }
+            }
+        }
+
+        self.status_message = format!("Loaded {} collections (cached)", self.collections.len());
+    }
+
+    /// Apply the result of the background startup fetch to the app, preserving
+    /// the user's current selection (matched by UID) across the data swap.
+    pub fn apply_refresh(&mut self, data: RefreshData) {
+        // Remember current selection by identity so it survives list changes.
+        let selected_col_uid = self
+            .flat_collections
+            .get(self.selected_collection_index)
+            .map(|c| c.uid.clone());
+        let selected_env_uid = self
+            .selected_environment_index
+            .and_then(|i| self.environments.get(i))
+            .map(|e| e.uid.clone());
+        let request_path = self
+            .config
+            .last_state
+            .as_ref()
+            .map(|s| s.request_path.clone())
+            .unwrap_or_default();
+
+        // Workspaces (best-effort) — re-resolve the saved selection.
+        if let Some(workspaces) = data.workspaces {
+            self.workspaces = workspaces;
+            if let Some(state) = &self.config.last_state {
+                if let Some(ws_id) = &state.workspace_id {
+                    self.selected_workspace_index =
+                        self.workspaces.iter().position(|w| &w.id == ws_id);
+                }
+            }
+        }
+
+        // Collections — errors surface to the user; cached list stays on error.
+        match data.collections {
+            Ok(collections) => {
+                self.collections = collections;
+                self.sort_collections();
+                self.flatten_collections();
+                if let Some(uid) = &selected_col_uid {
+                    if let Some(idx) = self.flat_collections.iter().position(|c| &c.uid == uid) {
+                        self.selected_collection_index = idx;
+                    }
+                }
+                if self.selected_collection_index >= self.flat_collections.len() {
+                    self.selected_collection_index = 0;
+                }
+                self.loading = false;
+                self.status_message = format!("Loaded {} collections", self.collections.len());
+            }
+            Err(e) => {
+                self.loading = false;
+                log_error("refresh_collections", &e);
+                self.error = Some(e);
+                self.status_message = String::from("Failed to load collections");
+            }
+        }
+
+        // Environments (best-effort) — re-resolve the saved selection.
+        if let Some(environments) = data.environments {
+            self.environments = environments;
+            if let Some(uid) = &selected_env_uid {
+                self.selected_environment_index =
+                    self.environments.iter().position(|e| &e.uid == uid);
+            }
+        }
+
+        // Environment values (secrets — fetched live, never cached).
+        if let Some(res) = data.environment_detail {
+            match res {
+                Ok(detail) => {
+                    self.current_environment = Some(detail);
+                    self.rebuild_variables();
+                }
+                Err(e) => log_error("refresh_environment", &e),
+            }
+        }
+
+        // Collection detail (requests) — fetched live.
+        if let Some(res) = data.collection_detail {
+            match res {
+                Ok(detail) => {
+                    self.current_collection = Some(detail);
+                    self.rebuild_variables();
+                    self.expanded_folders.clear();
+                    self.flatten_items();
+                    self.restore_request_path(&request_path);
+                }
+                Err(e) => {
+                    log_error("refresh_collection_detail", &e);
+                    self.error = Some(e);
+                }
+            }
+        }
+
+        // Persist the fresh lists (metadata only) for next launch.
+        let cache = CacheStore {
+            workspaces: self.workspaces.clone(),
+            collections: self.collections.clone(),
+            environments: self.environments.clone(),
+        };
+        if let Err(e) = cache.save() {
+            log_error("cache_save", &e.to_string());
+        }
     }
 
     fn expand_to_path(&mut self, target_path: &[usize]) {
@@ -1274,6 +1295,166 @@ impl App {
         self.pending_execute = None;
         self.input_mode = InputMode::Normal;
         self.status_message = String::from("Request cancelled");
+    }
+
+    /// Unique `{{placeholder}}` keys referenced by the current request (URL,
+    /// headers, and body), in first-seen order. Empty when no request is
+    /// selected or it contains no placeholders.
+    pub fn current_request_params(&self) -> Vec<String> {
+        let mut keys: Vec<String> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+
+        if let Some(request) = &self.current_request {
+            extract_placeholders(&request.url.to_string(), &mut keys, &mut seen);
+            for header in &request.header {
+                extract_placeholders(&header.key, &mut keys, &mut seen);
+                extract_placeholders(&header.value, &mut keys, &mut seen);
+            }
+            if let Some(body) = &request.body {
+                if let Some(raw) = &body.raw {
+                    extract_placeholders(raw, &mut keys, &mut seen);
+                }
+            }
+        }
+
+        keys
+    }
+
+    /// The (collection_uid, request_path) identifying the selected request,
+    /// used to key persisted param values. None when there's no valid, saveable
+    /// selection (e.g. the Favorites folder marker, which isn't serializable).
+    fn current_request_key(&self) -> Option<(String, Vec<usize>)> {
+        let uid = self.get_current_collection_uid()?;
+        let path = self.flat_items.get(self.selected_item_index)?.path.clone();
+        if path.contains(&usize::MAX) {
+            return None;
+        }
+        Some((uid, path))
+    }
+
+    /// Scan the current request for `{{placeholder}}` values and, if any are
+    /// found, open the parameter-input dialog. Each field is pre-filled from
+    /// the last value entered for this request (persisted), then falling back
+    /// to the resolved variable, then empty. Returns true if the dialog opened.
+    pub fn start_params_input(&mut self) -> bool {
+        let keys = self.current_request_params();
+        if keys.is_empty() {
+            return false;
+        }
+
+        let stored = self
+            .current_request_key()
+            .and_then(|(uid, path)| self.param_values.get(&uid, &path).cloned());
+
+        let params: Vec<(String, String)> = keys
+            .into_iter()
+            .map(|key| {
+                let value = stored
+                    .as_ref()
+                    .and_then(|m| m.get(&key).cloned())
+                    .or_else(|| self.variables.get(&key).cloned())
+                    .unwrap_or_default();
+                (key, value)
+            })
+            .collect();
+
+        let cursor_position = params[0].1.len();
+        self.params_dialog = Some(ParamsDialog {
+            params,
+            selected: 0,
+            cursor_position,
+        });
+        self.input_mode = InputMode::ParamsInput;
+        self.status_message = String::from("Edit parameters | Enter: Send | Esc: Cancel");
+        true
+    }
+
+    pub fn params_input_char(&mut self, c: char) {
+        if let Some(dialog) = &mut self.params_dialog {
+            if let Some((_, value)) = dialog.params.get_mut(dialog.selected) {
+                value.insert(dialog.cursor_position, c);
+                dialog.cursor_position += 1;
+            }
+        }
+    }
+
+    pub fn params_backspace(&mut self) {
+        if let Some(dialog) = &mut self.params_dialog {
+            if dialog.cursor_position > 0 {
+                if let Some((_, value)) = dialog.params.get_mut(dialog.selected) {
+                    dialog.cursor_position -= 1;
+                    value.remove(dialog.cursor_position);
+                }
+            }
+        }
+    }
+
+    pub fn params_cursor_left(&mut self) {
+        if let Some(dialog) = &mut self.params_dialog {
+            if dialog.cursor_position > 0 {
+                dialog.cursor_position -= 1;
+            }
+        }
+    }
+
+    pub fn params_cursor_right(&mut self) {
+        if let Some(dialog) = &mut self.params_dialog {
+            let len = dialog.params.get(dialog.selected).map(|(_, v)| v.len()).unwrap_or(0);
+            if dialog.cursor_position < len {
+                dialog.cursor_position += 1;
+            }
+        }
+    }
+
+    pub fn params_up(&mut self) {
+        if let Some(dialog) = &mut self.params_dialog {
+            if dialog.selected > 0 {
+                dialog.selected -= 1;
+                dialog.cursor_position = dialog.params[dialog.selected].1.len();
+            }
+        }
+    }
+
+    pub fn params_down(&mut self) {
+        if let Some(dialog) = &mut self.params_dialog {
+            if dialog.selected + 1 < dialog.params.len() {
+                dialog.selected += 1;
+                dialog.cursor_position = dialog.params[dialog.selected].1.len();
+            }
+        }
+    }
+
+    pub fn cancel_params_input(&mut self) {
+        self.params_dialog = None;
+        self.input_mode = InputMode::Normal;
+        self.status_message = String::from("Request cancelled");
+    }
+
+    /// Commit the edited placeholder values as overrides for the next execution,
+    /// and persist them for this request so they pre-fill next time. Values that
+    /// simply match the resolved variable (e.g. an untouched environment secret)
+    /// are not persisted, so those stay driven by the live environment.
+    pub fn confirm_params(&mut self) {
+        if let Some(dialog) = self.params_dialog.take() {
+            if let Some((uid, path)) = self.current_request_key() {
+                let mut to_store: HashMap<String, String> = HashMap::new();
+                for (key, value) in &dialog.params {
+                    if value.is_empty() {
+                        continue;
+                    }
+                    if self.variables.get(key).map(|v| v == value).unwrap_or(false) {
+                        continue;
+                    }
+                    to_store.insert(key.clone(), value.clone());
+                }
+                self.param_values.set(uid, path, to_store);
+                if let Err(e) = self.param_values.save() {
+                    log_error("save_param_values", &e.to_string());
+                }
+            }
+            self.param_overrides = dialog.params.into_iter().collect();
+        }
+        self.input_mode = InputMode::Normal;
     }
 
     pub async fn execute_current_request(&mut self) -> Result<()> {
@@ -2057,6 +2238,32 @@ impl App {
     }
 }
 
+/// Append every unique `{{placeholder}}` key found in `text` to `keys`,
+/// using `seen` to deduplicate across multiple calls. Keys are trimmed and
+/// empty placeholders (`{{}}`) are ignored.
+fn extract_placeholders(text: &str, keys: &mut Vec<String>, seen: &mut HashSet<String>) {
+    let mut rest = text;
+    while let Some(start) = rest.find("{{") {
+        let after_open = &rest[start + 2..];
+        let end = match after_open.find("}}") {
+            Some(end) => end,
+            None => break,
+        };
+        let inner = &after_open[..end];
+        // If another "{{" appears before the "}}", the real opener is that inner
+        // one — restart from there rather than swallowing it into the key.
+        if let Some(inner_open) = inner.find("{{") {
+            rest = &after_open[inner_open..];
+            continue;
+        }
+        let key = inner.trim().to_string();
+        if !key.is_empty() && seen.insert(key.clone()) {
+            keys.push(key);
+        }
+        rest = &after_open[end + 2..];
+    }
+}
+
 fn flatten_recursive(
     items: &[Item],
     depth: usize,
@@ -2185,5 +2392,59 @@ fn search_items_recursive(
                 }
             }
         }
+    }
+}
+
+/// Raw results of the startup network fetch, applied to the App via
+/// [`App::apply_refresh`]. Optional/Result fields preserve the original error
+/// semantics (workspaces & environments are best-effort; collections surface
+/// errors to the user).
+pub struct RefreshData {
+    pub workspaces: Option<Vec<WorkspaceInfo>>,
+    pub collections: std::result::Result<Vec<CollectionInfo>, String>,
+    pub environments: Option<Vec<EnvironmentInfo>>,
+    pub collection_detail: Option<std::result::Result<CollectionDetail, String>>,
+    pub environment_detail: Option<std::result::Result<EnvironmentDetail, String>>,
+}
+
+/// Fetch everything needed for startup in a single batch of concurrent
+/// requests. The collection/environment detail fetches use the saved UIDs
+/// directly, so all five calls are independent and run in parallel (one
+/// round-trip of latency instead of five sequential ones).
+pub async fn fetch_startup_data(
+    client: PostmanClient,
+    workspace_id: Option<String>,
+    collection_uid: Option<String>,
+    environment_uid: Option<String>,
+) -> RefreshData {
+    let (workspaces, collections, environments, collection_detail, environment_detail) = tokio::join!(
+        async { client.list_workspaces().await.ok() },
+        async {
+            client
+                .list_collections(workspace_id.as_deref())
+                .await
+                .map_err(|e| e.to_string())
+        },
+        async { client.list_environments(workspace_id.as_deref()).await.ok() },
+        async {
+            match collection_uid.as_deref() {
+                Some(uid) => Some(client.get_collection(uid).await.map_err(|e| e.to_string())),
+                None => None,
+            }
+        },
+        async {
+            match environment_uid.as_deref() {
+                Some(uid) => Some(client.get_environment(uid).await.map_err(|e| e.to_string())),
+                None => None,
+            }
+        },
+    );
+
+    RefreshData {
+        workspaces,
+        collections,
+        environments,
+        collection_detail,
+        environment_detail,
     }
 }

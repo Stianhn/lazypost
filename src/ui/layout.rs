@@ -79,6 +79,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     if app.input_mode == InputMode::ExecuteConfirm {
         render_execute_confirm_popup(frame, app);
     }
+
+    // Render parameter input dialog if active
+    if app.input_mode == InputMode::ParamsInput {
+        render_params_dialog(frame, app);
+    }
 }
 
 fn render_main_layout(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -300,7 +305,8 @@ fn render_preview_pane(frame: &mut Frame, app: &App, area: Rect) {
     let has_local_edit = app.has_unsaved_edit();
 
     if let Some(request) = &app.current_request {
-        render_request_preview(frame, request, area, border_color, is_focused, has_local_edit);
+        let param_count = app.current_request_params().len();
+        render_request_preview(frame, request, area, border_color, is_focused, has_local_edit, param_count);
     } else {
         let block = Block::default()
             .borders(Borders::ALL)
@@ -322,7 +328,7 @@ fn render_response_pane(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-fn render_request_preview(frame: &mut Frame, request: &crate::api::Request, area: Rect, border_color: Color, is_focused: bool, has_local_edit: bool) {
+fn render_request_preview(frame: &mut Frame, request: &crate::api::Request, area: Rect, border_color: Color, is_focused: bool, has_local_edit: bool, param_count: usize) {
     let url = request.url.to_string();
     let headers_text: String = request
         .header
@@ -361,10 +367,21 @@ fn render_request_preview(frame: &mut Frame, request: &crate::api::Request, area
         Style::default()
     };
 
+    // Title: the numbered pane label, plus a `{{ }} N` badge advertising how
+    // many placeholders this request has (so it's clear a params dialog will
+    // pop up on Enter, before you fire it).
+    let mut title_spans = vec![Span::styled(get_title_with_number(title, 3, is_focused), title_style)];
+    if param_count > 0 {
+        title_spans.push(Span::styled(
+            format!("{{{{ }}}} {} ", param_count),
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        ));
+    }
+
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border_color))
-        .title(Span::styled(get_title_with_number(title, 3, is_focused), title_style));
+        .title(Line::from(title_spans));
 
     let paragraph = Paragraph::new(content)
         .block(block)
@@ -497,6 +514,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         InputMode::JsonSearch => "Enter: Confirm | Esc: Cancel | n/N: Next/Prev match | Type to search",
         InputMode::Saving => "Esc: Cancel",
         InputMode::ExecuteConfirm => "y/Enter: Execute | n/Esc: Cancel",
+        InputMode::ParamsInput => "↑/↓: Field | Enter: Send | Esc: Cancel | Type to edit",
         InputMode::EnvironmentSelect => "j/k: Nav | Enter: Select | Esc: Cancel",
         InputMode::VariablesView => if app.editing_variable.is_some() {
             "Enter: Confirm | Esc: Cancel | Type to edit"
@@ -509,23 +527,23 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         InputMode::Normal => {
             let has_unsaved = app.has_unsaved_edit();
             match (app.focused_pane, has_env, has_unsaved) {
-                (FocusedPane::Collections, true, _) => "1-4: Pane | j/k: Nav | Enter: Load | f: Fav | v: Env | V: Vars | q: Quit",
-                (FocusedPane::Collections, false, _) => "1-4: Pane | j/k: Nav | Enter: Load | f: Fav | v: Env | q: Quit",
-                (FocusedPane::Requests, true, _) => "1-4: Pane | j/k: Nav | Enter: Select | e: Exec | a: Add | f: Fav | v: Env | V: Vars | q: Quit",
-                (FocusedPane::Requests, false, _) => "1-4: Pane | j/k: Nav | Enter: Select | e: Exec | a: Add | f: Fav | v: Env | q: Quit",
-                (FocusedPane::Preview, true, true) => "1-4: Pane | e: Exec | E: Edit | S: Save* | v: Env | V: Vars | q: Quit",
-                (FocusedPane::Preview, true, false) => "1-4: Pane | e: Exec | E: Edit | v: Env | V: Vars | q: Quit",
-                (FocusedPane::Preview, false, true) => "1-4: Pane | e: Exec | E: Edit | S: Save* | v: Env | q: Quit",
-                (FocusedPane::Preview, false, false) => "1-4: Pane | e: Exec | E: Edit | v: Env | q: Quit",
+                (FocusedPane::Collections, true, _) => "1-4: Pane | j/k: Nav | Enter: Load | f: Fav | v: Env | V: Vars | Ctrl+q: Quit",
+                (FocusedPane::Collections, false, _) => "1-4: Pane | j/k: Nav | Enter: Load | f: Fav | v: Env | Ctrl+q: Quit",
+                (FocusedPane::Requests, true, _) => "1-4: Pane | j/k: Nav | Enter: Select | e: Exec | a: Add | f: Fav | v: Env | V: Vars | Ctrl+q: Quit",
+                (FocusedPane::Requests, false, _) => "1-4: Pane | j/k: Nav | Enter: Select | e: Exec | a: Add | f: Fav | v: Env | Ctrl+q: Quit",
+                (FocusedPane::Preview, true, true) => "1-4: Pane | e: Exec | E: Edit | S: Save* | v: Env | V: Vars | Ctrl+q: Quit",
+                (FocusedPane::Preview, true, false) => "1-4: Pane | e: Exec | E: Edit | v: Env | V: Vars | Ctrl+q: Quit",
+                (FocusedPane::Preview, false, true) => "1-4: Pane | e: Exec | E: Edit | S: Save* | v: Env | Ctrl+q: Quit",
+                (FocusedPane::Preview, false, false) => "1-4: Pane | e: Exec | E: Edit | v: Env | Ctrl+q: Quit",
                 (FocusedPane::Response, true, _) => if app.json_viewer_state.is_some() {
-                    "j/k: Nav | h/l: Fold | H/L: Fold All | /: Search | n/N: Match | y: Copy | v: Env | q: Quit"
+                    "j/k: Nav | h/l: Fold | H/L: Fold All | /: Search | n/N: Match | y: Copy | v: Env | Ctrl+q: Quit"
                 } else {
-                    "1-4: Pane | v: Env | V: Vars | q: Quit"
+                    "1-4: Pane | v: Env | V: Vars | Ctrl+q: Quit"
                 },
                 (FocusedPane::Response, false, _) => if app.json_viewer_state.is_some() {
-                    "j/k: Nav | h/l: Fold | H/L: Fold All | /: Search | n/N: Match | y: Copy | v: Env | q: Quit"
+                    "j/k: Nav | h/l: Fold | H/L: Fold All | /: Search | n/N: Match | y: Copy | v: Env | Ctrl+q: Quit"
                 } else {
-                    "1-4: Pane | v: Env | q: Quit"
+                    "1-4: Pane | v: Env | Ctrl+q: Quit"
                 },
             }
         },
@@ -901,6 +919,80 @@ fn render_request_executing_popup(frame: &mut Frame) {
 
     let paragraph = Paragraph::new(content).block(block);
 
+    frame.render_widget(paragraph, popup_area);
+}
+
+fn render_params_dialog(frame: &mut Frame, app: &App) {
+    let dialog = match &app.params_dialog {
+        Some(d) => d,
+        None => return,
+    };
+
+    let area = frame.area();
+
+    let max_key_len = dialog.params.iter().map(|(k, _)| k.len()).max().unwrap_or(4);
+    let popup_width = ((max_key_len + 50).min(80)).max(44) as u16;
+    let popup_height = (dialog.params.len() + 6).min(24) as u16;
+
+    let x = (area.width.saturating_sub(popup_width)) / 2;
+    let y = (area.height.saturating_sub(popup_height)) / 2;
+
+    let popup_area = Rect::new(x, y, popup_width.min(area.width), popup_height.min(area.height));
+
+    frame.render_widget(Clear, popup_area);
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(""));
+
+    for (i, (key, value)) in dialog.params.iter().enumerate() {
+        let is_selected = i == dialog.selected;
+
+        // Render the focused field's value with a cursor marker.
+        let display_value = if is_selected {
+            let cursor_pos = dialog.cursor_position;
+            if cursor_pos >= value.len() {
+                format!("{}_", value)
+            } else {
+                let (before, after) = value.split_at(cursor_pos);
+                format!("{}|{}", before, after)
+            }
+        } else {
+            value.clone()
+        };
+
+        let key_style = if is_selected {
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Cyan)
+        };
+        let value_style = if is_selected {
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+
+        let indicator = if is_selected { " > " } else { "   " };
+        lines.push(Line::from(vec![
+            Span::styled(indicator, key_style),
+            Span::styled(format!("{{{{{}}}}}", key), key_style),
+            Span::raw("  "),
+            Span::styled(display_value, value_style),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        " ↑/↓: Field | Enter: Send | Esc: Cancel",
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Request Parameters ")
+        .border_style(Style::default().fg(Color::Green))
+        .style(Style::default().bg(Color::Black));
+
+    let paragraph = Paragraph::new(lines).block(block);
     frame.render_widget(paragraph, popup_area);
 }
 

@@ -2,6 +2,10 @@
 name = "lazypost"
 version = "0.1.0"
 edition = "2024"
+description = "A terminal UI client for Postman collections, inspired by lazygit."
+repository = "https://github.com/Stianhn/lazypost"
+license = "MIT"
+readme = "README.md"
 
 [dependencies]
 ratatui = "0.30.0"

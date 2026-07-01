@@ -5,7 +5,7 @@ pub struct CollectionsResponse {
     pub collections: Vec<CollectionInfo>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CollectionInfo {
     pub name: String,
     pub uid: String,
@@ -204,7 +204,7 @@ pub struct EnvironmentsResponse {
     pub environments: Vec<EnvironmentInfo>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct EnvironmentInfo {
     pub name: String,
     pub uid: String,
@@ -236,7 +236,7 @@ pub struct WorkspacesResponse {
     pub workspaces: Vec<WorkspaceInfo>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WorkspaceInfo {
     pub id: String,
     pub name: String,

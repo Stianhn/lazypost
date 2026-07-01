@@ -12,14 +12,14 @@ use std::env;
 
 use anyhow::{Context, Result};
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind},
+    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::prelude::*;
 
 use app::{App, EditableRequest, FocusedPane, InputMode};
-use config::Config;
+use config::{CacheStore, Config};
 use logging::log_error;
 
 #[tokio::main]
@@ -254,13 +254,42 @@ async fn run_app(
 ) -> Result<()> {
     let mut app = App::new(config);
 
-    app.load_collections().await?;
+    // Paint instantly from the on-disk cache (no network). Fresh data is
+    // fetched in the background below and applied when it arrives.
+    app.populate_from_cache(CacheStore::load());
+    if app.collections.is_empty() {
+        app.loading = true;
+        app.status_message = String::from("Loading...");
+    }
+    terminal.draw(|frame| ui::render(frame, &mut app))?;
 
-    // Restore last selected collection and request
-    app.restore_last_state().await?;
+    // Kick off the background refresh: a single batch of concurrent requests.
+    let (refresh_tx, refresh_rx) = std::sync::mpsc::channel();
+    let (ws_id, coll_uid, env_uid) = match &app.config.last_state {
+        Some(s) => (
+            s.workspace_id.clone(),
+            if s.collection_uid.is_empty() { None } else { Some(s.collection_uid.clone()) },
+            s.environment_uid.clone(),
+        ),
+        None => (None, None, None),
+    };
+    let client = app.client.clone();
+    tokio::spawn(async move {
+        let data = crate::app::fetch_startup_data(client, ws_id, coll_uid, env_uid).await;
+        let _ = refresh_tx.send(data);
+    });
 
+    let mut refreshed = false;
     loop {
         terminal.draw(|frame| ui::render(frame, &mut app))?;
+
+        // Apply the background refresh result once it arrives (non-blocking).
+        if !refreshed {
+            if let Ok(data) = refresh_rx.try_recv() {
+                app.apply_refresh(data);
+                refreshed = true;
+            }
+        }
 
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
@@ -271,7 +300,9 @@ async fn run_app(
                 match app.input_mode {
                     InputMode::Normal => {
                         match key.code {
-                            KeyCode::Char('q') => {
+                            KeyCode::Char('q')
+                                if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                            {
                                 return Ok(());
                             }
                             // Pane switching with number keys
@@ -349,9 +380,9 @@ async fn run_app(
                                 FocusedPane::Preview => {
                                     // Execute if we have a request
                                     if app.current_request.is_some() {
-                                        // Check if method needs confirmation
-                                        if !app.start_execute_confirmation() {
-                                            // No confirmation needed, execute directly
+                                        // Fill in {{params}} first, then confirm if needed
+                                        if !app.start_params_input() && !app.start_execute_confirmation() {
+                                            // No params, no confirmation needed, execute directly
                                             app.request_executing = true;
                                             terminal.draw(|frame| ui::render(frame, &mut app))?;
                                             app.execute_current_request().await?;
@@ -368,9 +399,9 @@ async fn run_app(
                             // Execute request
                             KeyCode::Char('e') => {
                                 if app.current_request.is_some() {
-                                    // Check if method needs confirmation
-                                    if !app.start_execute_confirmation() {
-                                        // No confirmation needed, execute directly
+                                    // Fill in {{params}} first, then confirm if needed
+                                    if !app.start_params_input() && !app.start_execute_confirmation() {
+                                        // No params, no confirmation needed, execute directly
                                         app.request_executing = true;
                                         terminal.draw(|frame| ui::render(frame, &mut app))?;
                                         app.execute_current_request().await?;
@@ -641,6 +672,41 @@ async fn run_app(
                             }
                             KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
                                 app.cancel_execute_confirmation();
+                            }
+                            _ => {}
+                        }
+                    }
+                    InputMode::ParamsInput => {
+                        match key.code {
+                            KeyCode::Esc => {
+                                app.cancel_params_input();
+                            }
+                            KeyCode::Enter => {
+                                // Commit param values, then confirm (if destructive) or fire
+                                app.confirm_params();
+                                if !app.start_execute_confirmation() {
+                                    app.request_executing = true;
+                                    terminal.draw(|frame| ui::render(frame, &mut app))?;
+                                    app.execute_current_request().await?;
+                                }
+                            }
+                            KeyCode::Up | KeyCode::BackTab => {
+                                app.params_up();
+                            }
+                            KeyCode::Down | KeyCode::Tab => {
+                                app.params_down();
+                            }
+                            KeyCode::Left => {
+                                app.params_cursor_left();
+                            }
+                            KeyCode::Right => {
+                                app.params_cursor_right();
+                            }
+                            KeyCode::Backspace => {
+                                app.params_backspace();
+                            }
+                            KeyCode::Char(c) => {
+                                app.params_input_char(c);
                             }
                             _ => {}
                         }
