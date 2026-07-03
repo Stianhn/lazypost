@@ -560,7 +560,11 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         InputMode::Saving => "Esc: Cancel",
         InputMode::ExecuteConfirm => "y/Enter: Execute | n/Esc: Cancel",
         InputMode::DeleteEditConfirm => "y/Enter: Discard | n/Esc: Cancel",
-        InputMode::ParamsInput => "↑/↓: Field | Enter: Send | Esc: Cancel | Type to edit",
+        InputMode::ParamsInput => if app.params_dialog.as_ref().map(|d| d.editing).unwrap_or(false) {
+            "Type to edit | Ctrl+U: Clear | Enter/Esc: Done"
+        } else {
+            "j/k: Field | e: Edit | r: Replace | Enter: Send | Esc: Cancel"
+        },
         InputMode::EnvironmentSelect => "j/k: Nav | Enter: Select | Esc: Cancel",
         InputMode::VariablesView => if app.editing_variable.is_some() {
             "Enter: Confirm | Esc: Cancel | Type to edit"
@@ -996,8 +1000,8 @@ fn render_params_dialog(frame: &mut Frame, app: &App) {
     for (i, (key, value)) in dialog.params.iter().enumerate() {
         let is_selected = i == dialog.selected;
 
-        // Render the focused field's value with a cursor marker.
-        let display_value = if is_selected {
+        // Render the focused field's value with a cursor marker while typing.
+        let display_value = if is_selected && dialog.editing {
             let cursor_pos = dialog.cursor_position;
             if cursor_pos >= value.len() {
                 format!("{}_", value)
@@ -1030,8 +1034,13 @@ fn render_params_dialog(frame: &mut Frame, app: &App) {
     }
 
     lines.push(Line::from(""));
+    let hint = if dialog.editing {
+        " Type to edit | ←/→: Cursor | Ctrl+U: Clear | Enter/Esc: Done"
+    } else {
+        " j/k: Field | e: Edit | r: Replace | Enter: Send | Esc: Cancel"
+    };
     lines.push(Line::from(Span::styled(
-        " ↑/↓: Field | Type: Edit | Ctrl+U: Replace | Enter: Send | Esc: Cancel",
+        hint,
         Style::default().fg(Color::DarkGray),
     )));
 

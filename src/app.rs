@@ -48,6 +48,9 @@ pub struct ParamsDialog {
     pub selected: usize,
     /// Cursor byte-offset within the focused field's value.
     pub cursor_position: usize,
+    /// Whether the focused field is being typed into. When false, the dialog
+    /// is in navigation mode: e edits, r replaces, Enter sends.
+    pub editing: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1537,10 +1540,36 @@ impl App {
             params,
             selected: 0,
             cursor_position,
+            editing: false,
         });
         self.input_mode = InputMode::ParamsInput;
-        self.status_message = String::from("Edit parameters | Enter: Send | Esc: Cancel");
+        self.status_message =
+            String::from("Fill parameters | e: Edit | r: Replace | Enter: Send | Esc: Cancel");
         true
+    }
+
+    /// Enter typing mode on the focused field, keeping its pre-filled value.
+    pub fn params_start_edit(&mut self) {
+        if let Some(dialog) = &mut self.params_dialog {
+            dialog.cursor_position = dialog.params.get(dialog.selected).map(|(_, v)| v.len()).unwrap_or(0);
+            dialog.editing = true;
+        }
+    }
+
+    /// Enter typing mode on the focused field with its value cleared, so a
+    /// fresh value can be typed instead of editing the pre-filled one.
+    pub fn params_start_replace(&mut self) {
+        self.params_clear_value();
+        if let Some(dialog) = &mut self.params_dialog {
+            dialog.editing = true;
+        }
+    }
+
+    /// Leave typing mode, returning to field navigation.
+    pub fn params_stop_edit(&mut self) {
+        if let Some(dialog) = &mut self.params_dialog {
+            dialog.editing = false;
+        }
     }
 
     pub fn params_input_char(&mut self, c: char) {

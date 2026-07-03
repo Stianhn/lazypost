@@ -776,40 +776,65 @@ async fn run_app(
                         }
                     }
                     InputMode::ParamsInput => {
-                        match key.code {
-                            KeyCode::Esc => {
-                                app.cancel_params_input();
-                            }
-                            KeyCode::Enter => {
-                                // Commit param values, then confirm (if destructive) or fire
-                                app.confirm_params();
-                                if !app.start_execute_confirmation() {
-                                    app.queue_execution();
+                        let editing = app.params_dialog.as_ref().map(|d| d.editing).unwrap_or(false);
+                        if editing {
+                            match key.code {
+                                // Done typing: back to field navigation
+                                KeyCode::Enter | KeyCode::Esc => {
+                                    app.params_stop_edit();
                                 }
+                                KeyCode::Up | KeyCode::BackTab => {
+                                    app.params_stop_edit();
+                                    app.params_up();
+                                }
+                                KeyCode::Down | KeyCode::Tab => {
+                                    app.params_stop_edit();
+                                    app.params_down();
+                                }
+                                KeyCode::Left => {
+                                    app.params_cursor_left();
+                                }
+                                KeyCode::Right => {
+                                    app.params_cursor_right();
+                                }
+                                KeyCode::Backspace => {
+                                    app.params_backspace();
+                                }
+                                KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                    app.params_clear_value();
+                                }
+                                KeyCode::Char(c) => {
+                                    app.params_input_char(c);
+                                }
+                                _ => {}
                             }
-                            KeyCode::Up | KeyCode::BackTab => {
-                                app.params_up();
+                        } else {
+                            match key.code {
+                                KeyCode::Esc => {
+                                    app.cancel_params_input();
+                                }
+                                KeyCode::Enter => {
+                                    // Commit param values, then confirm (if destructive) or fire
+                                    app.confirm_params();
+                                    if !app.start_execute_confirmation() {
+                                        app.queue_execution();
+                                    }
+                                }
+                                KeyCode::Up | KeyCode::BackTab | KeyCode::Char('k') => {
+                                    app.params_up();
+                                }
+                                KeyCode::Down | KeyCode::Tab | KeyCode::Char('j') => {
+                                    app.params_down();
+                                }
+                                KeyCode::Char('e') => {
+                                    app.params_start_edit();
+                                }
+                                // Replace: clear the field and type a fresh value
+                                KeyCode::Char('r') => {
+                                    app.params_start_replace();
+                                }
+                                _ => {}
                             }
-                            KeyCode::Down | KeyCode::Tab => {
-                                app.params_down();
-                            }
-                            KeyCode::Left => {
-                                app.params_cursor_left();
-                            }
-                            KeyCode::Right => {
-                                app.params_cursor_right();
-                            }
-                            KeyCode::Backspace => {
-                                app.params_backspace();
-                            }
-                            // Replace: clear the field so a fresh value can be typed
-                            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                app.params_clear_value();
-                            }
-                            KeyCode::Char(c) => {
-                                app.params_input_char(c);
-                            }
-                            _ => {}
                         }
                     }
                 }
