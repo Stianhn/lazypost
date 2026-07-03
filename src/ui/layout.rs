@@ -979,7 +979,8 @@ fn render_params_dialog(frame: &mut Frame, app: &App) {
     let area = frame.area();
 
     let max_key_len = dialog.params.iter().map(|(k, _)| k.len()).max().unwrap_or(4);
-    let popup_width = ((max_key_len + 50).min(80)).max(44) as u16;
+    // Min width keeps the footer hint (below) on one line.
+    let popup_width = ((max_key_len + 50).min(80)).max(72) as u16;
     let popup_height = (dialog.params.len() + 6).min(24) as u16;
 
     let x = (area.width.saturating_sub(popup_width)) / 2;
@@ -1030,7 +1031,7 @@ fn render_params_dialog(frame: &mut Frame, app: &App) {
 
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        " ↑/↓: Field | Enter: Send | Esc: Cancel",
+        " ↑/↓: Field | Type: Edit | Ctrl+U: Replace | Enter: Send | Esc: Cancel",
         Style::default().fg(Color::DarkGray),
     )));
 

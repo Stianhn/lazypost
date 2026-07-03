@@ -186,6 +186,9 @@ pub struct App {
     pub unsaved_edit: Option<(EditableRequest, usize)>, // (edited request, item_index)
     // Execute confirmation state
     pub pending_execute: Option<PendingExecute>,
+    /// A resolved request queued for execution, run (cancellably) in the main
+    /// loop rather than inline in a key handler.
+    pub pending_execution: Option<Request>,
     pub pending_delete_edit: Option<PendingDeleteEdit>,
     // Request execution state
     pub request_executing: bool,
@@ -254,6 +257,7 @@ impl App {
             collection_loading: None,
             unsaved_edit: None,
             pending_execute: None,
+            pending_execution: None,
             pending_delete_edit: None,
             request_executing: false,
             params_dialog: None,
@@ -1559,6 +1563,17 @@ impl App {
         }
     }
 
+    /// Clear the focused field so its value can be replaced from scratch,
+    /// rather than editing the pre-filled value in place.
+    pub fn params_clear_value(&mut self) {
+        if let Some(dialog) = &mut self.params_dialog {
+            if let Some((_, value)) = dialog.params.get_mut(dialog.selected) {
+                value.clear();
+                dialog.cursor_position = 0;
+            }
+        }
+    }
+
     pub fn params_cursor_left(&mut self) {
         if let Some(dialog) = &mut self.params_dialog {
             if dialog.cursor_position > 0 {
@@ -1671,6 +1686,14 @@ impl App {
         Some(resolved_request)
     }
 
+    /// Queue the current request for execution. The main loop picks this up and
+    /// runs it in a cancellable background task (same path as collection loads).
+    pub fn queue_execution(&mut self) {
+        if let Some(resolved) = self.prepare_execution_request() {
+            self.pending_execution = Some(resolved);
+        }
+    }
+
     /// Apply the outcome of a (possibly failed) request execution.
     pub fn apply_execution_result(&mut self, result: Result<ExecutedResponse>) {
         self.loading = false;
@@ -1680,6 +1703,9 @@ impl App {
                 // Try to parse response body as JSON for the viewer
                 self.json_viewer_state = JsonViewerState::new(&response.body);
                 self.response = Some(response);
+                // Jump focus to the response so it can be browsed right away
+                // (before setting the status, since set_focus rewrites it).
+                self.set_focus(FocusedPane::Response);
                 self.status_message = String::from("Request completed");
             }
             Err(e) => {

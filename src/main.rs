@@ -170,25 +170,6 @@ async fn run_cancellable<T: Send + 'static>(
     }
 }
 
-/// Execute the currently-selected request in a background task, showing the
-/// "Performing request..." popup and allowing Esc to cancel.
-async fn execute_request_cancellable(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    app: &mut App,
-) -> Result<()> {
-    let resolved = match app.prepare_execution_request() {
-        Some(r) => r,
-        None => return Ok(()),
-    };
-    let client = app.client.clone();
-    let handle = tokio::spawn(async move { client.execute_request(&resolved).await });
-
-    match run_cancellable(terminal, app, handle).await? {
-        Some(result) => app.apply_execution_result(result),
-        None => app.cancel_execution(),
-    }
-    Ok(())
-}
 
 /// Kick off a non-blocking background refresh of the currently-loaded
 /// collection. The result is polled by the main loop, so the user can keep
@@ -492,7 +473,7 @@ async fn run_app(
                                         // Fill in {{params}} first, then confirm if needed
                                         if !app.start_params_input() && !app.start_execute_confirmation() {
                                             // No params, no confirmation needed, execute directly
-                                            execute_request_cancellable(terminal, &mut app).await?;
+                                            app.queue_execution();
                                         }
                                     }
                                 }
@@ -509,7 +490,7 @@ async fn run_app(
                                     // Fill in {{params}} first, then confirm if needed
                                     if !app.start_params_input() && !app.start_execute_confirmation() {
                                         // No params, no confirmation needed, execute directly
-                                        execute_request_cancellable(terminal, &mut app).await?;
+                                        app.queue_execution();
                                     }
                                 }
                             }
@@ -775,7 +756,7 @@ async fn run_app(
                                 // User confirmed, execute the request
                                 app.pending_execute = None;
                                 app.input_mode = InputMode::Normal;
-                                execute_request_cancellable(terminal, &mut app).await?;
+                                app.queue_execution();
                             }
                             KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
                                 app.cancel_execute_confirmation();
@@ -803,7 +784,7 @@ async fn run_app(
                                 // Commit param values, then confirm (if destructive) or fire
                                 app.confirm_params();
                                 if !app.start_execute_confirmation() {
-                                    execute_request_cancellable(terminal, &mut app).await?;
+                                    app.queue_execution();
                                 }
                             }
                             KeyCode::Up | KeyCode::BackTab => {
@@ -820,6 +801,10 @@ async fn run_app(
                             }
                             KeyCode::Backspace => {
                                 app.params_backspace();
+                            }
+                            // Replace: clear the field so a fresh value can be typed
+                            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                app.params_clear_value();
                             }
                             KeyCode::Char(c) => {
                                 app.params_input_char(c);
@@ -847,6 +832,16 @@ async fn run_app(
             match run_cancellable(terminal, &mut app, handle).await? {
                 Some(result) => app.apply_collection_result(result, collection_name),
                 None => app.cancel_collection_load(),
+            }
+        }
+
+        // If a request is queued, execute it in the background so Esc can cancel
+        if let Some(resolved) = app.pending_execution.take() {
+            let client = app.client.clone();
+            let handle = tokio::spawn(async move { client.execute_request(&resolved).await });
+            match run_cancellable(terminal, &mut app, handle).await? {
+                Some(result) => app.apply_execution_result(result),
+                None => app.cancel_execution(),
             }
         }
 
