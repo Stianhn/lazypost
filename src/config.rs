@@ -20,6 +20,10 @@ pub struct Config {
 pub struct FavoriteRequest {
     pub collection_uid: String,
     pub path: Vec<usize>,
+    /// Request name captured when favorited, so the Favorites pane can show it
+    /// before the owning collection has been loaded this session.
+    #[serde(default)]
+    pub name: String,
 }
 
 /// A locally edited request that hasn't been synced to Postman
@@ -140,10 +144,9 @@ impl Config {
         }
     }
 
-    pub fn add_favorite_request(&mut self, collection_uid: String, path: Vec<usize>) {
-        let fav = FavoriteRequest { collection_uid, path };
-        if !self.favorite_requests.contains(&fav) {
-            self.favorite_requests.push(fav);
+    pub fn add_favorite_request(&mut self, collection_uid: String, path: Vec<usize>, name: String) {
+        if !self.is_request_favorite(&collection_uid, &path) {
+            self.favorite_requests.push(FavoriteRequest { collection_uid, path, name });
         }
     }
 

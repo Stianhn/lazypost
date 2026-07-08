@@ -101,17 +101,23 @@ fn render_main_layout(frame: &mut Frame, app: &mut App, area: Rect) {
     let left_area = horizontal[0];
     let right_area = horizontal[1];
 
-    // Split left into top (Collections) and bottom (Requests)
+    // Split left into Collections, Requests, and Favorites
     let left_vertical = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+        .constraints([
+            Constraint::Percentage(30),
+            Constraint::Percentage(45),
+            Constraint::Percentage(25),
+        ])
         .split(left_area);
 
     let collections_area = left_vertical[0];
     let requests_area = left_vertical[1];
+    let favorites_area = left_vertical[2];
 
     render_collections_pane(frame, app, collections_area);
     render_requests_pane(frame, app, requests_area);
+    render_favorites_pane(frame, app, favorites_area);
 
     // Split right area if we have a response
     if app.response.is_some() {
@@ -304,16 +310,10 @@ fn render_requests_pane(frame: &mut Frame, app: &mut App, area: Rect) {
         })
         .collect();
 
-    let base_title = app
-        .current_collection
-        .as_ref()
-        .map(|c| c.info.name.clone())
-        .unwrap_or_else(|| "Requests".to_string());
-
     let title = if is_searching {
-        format!("{} ({} matches)", base_title, app.search_match_paths.len())
+        format!("Requests ({} matches)", app.search_match_paths.len())
     } else {
-        base_title
+        "Requests".to_string()
     };
 
     // Position of the selected request within the (filtered) list, so the view
@@ -344,6 +344,64 @@ fn render_requests_pane(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_stateful_widget(list, area, &mut app.requests_list_state);
 }
 
+fn render_favorites_pane(frame: &mut Frame, app: &mut App, area: Rect) {
+    let is_focused = app.focused_pane == FocusedPane::Favorites;
+    let entries = app.favorite_entries();
+
+    // Keep the selection in bounds — favorites can also be removed from the
+    // Requests pane while this pane isn't focused.
+    if !entries.is_empty() && app.selected_favorite_index >= entries.len() {
+        app.selected_favorite_index = entries.len() - 1;
+    }
+
+    let items: Vec<ListItem> = entries
+        .iter()
+        .enumerate()
+        .map(|(i, entry)| {
+            let is_selected = i == app.selected_favorite_index;
+            let (name_style, collection_style) = if is_selected {
+                let selected = Style::default()
+                    .bg(Color::DarkGray)
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD);
+                (selected, selected)
+            } else {
+                (
+                    Style::default().fg(Color::Yellow),
+                    Style::default().fg(Color::DarkGray),
+                )
+            };
+
+            let method_prefix = entry
+                .method
+                .as_ref()
+                .map(|m| format!("[{}] ", m))
+                .unwrap_or_default();
+
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("* {}{}", method_prefix, entry.name), name_style),
+                Span::styled(format!(" ({})", entry.collection_name), collection_style),
+            ]))
+        })
+        .collect();
+
+    let border_color = get_border_color(app, FocusedPane::Favorites);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color))
+        .title(get_title_with_number("Favorites", 3, is_focused));
+
+    let selected_pos = if entries.is_empty() {
+        None
+    } else {
+        Some(app.selected_favorite_index)
+    };
+
+    let list = List::new(items).block(block);
+    app.favorites_list_state.select(selected_pos);
+    frame.render_stateful_widget(list, area, &mut app.favorites_list_state);
+}
+
 fn render_preview_pane(frame: &mut Frame, app: &App, area: Rect) {
     let is_focused = app.focused_pane == FocusedPane::Preview;
     let border_color = get_border_color(app, FocusedPane::Preview);
@@ -356,7 +414,7 @@ fn render_preview_pane(frame: &mut Frame, app: &App, area: Rect) {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border_color))
-            .title(get_title_with_number("Request", 3, is_focused));
+            .title(get_title_with_number("Request", 4, is_focused));
         let paragraph = Paragraph::new("Select a request to see details")
             .block(block)
             .wrap(Wrap { trim: true });
@@ -415,7 +473,7 @@ fn render_request_preview(frame: &mut Frame, request: &crate::api::Request, area
     // Title: the numbered pane label, plus a `{{ }} N` badge advertising how
     // many placeholders this request has (so it's clear a params dialog will
     // pop up on Enter, before you fire it).
-    let mut title_spans = vec![Span::styled(get_title_with_number(title, 3, is_focused), title_style)];
+    let mut title_spans = vec![Span::styled(get_title_with_number(title, 4, is_focused), title_style)];
     if param_count > 0 {
         title_spans.push(Span::styled(
             format!("{{{{ }}}} {} ", param_count),
@@ -455,7 +513,7 @@ fn render_response(frame: &mut Frame, app: &mut App, response: &crate::api::Exec
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border_color))
-        .title(get_title_with_number(title, 4, is_focused));
+        .title(get_title_with_number(title, 5, is_focused));
 
     // If we have a JSON viewer state, render the tree
     if let Some(ref mut viewer_state) = app.json_viewer_state {
@@ -479,7 +537,7 @@ fn render_response(frame: &mut Frame, app: &mut App, response: &crate::api::Exec
         let status_block = Block::default()
             .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT)
             .border_style(Style::default().fg(border_color))
-            .title(get_title_with_number(title, 4, is_focused));
+            .title(get_title_with_number(title, 5, is_focused));
 
         let status_para = Paragraph::new(status_line).block(status_block);
         frame.render_widget(status_para, chunks[0]);
@@ -577,23 +635,25 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         InputMode::Normal => {
             let has_unsaved = app.has_unsaved_edit();
             match (app.focused_pane, has_env, has_unsaved) {
-                (FocusedPane::Collections, true, _) => "1-4: Pane | j/k: Nav | Enter: Load | f: Fav | v: Env | V: Vars | Ctrl+q: Quit",
-                (FocusedPane::Collections, false, _) => "1-4: Pane | j/k: Nav | Enter: Load | f: Fav | v: Env | Ctrl+q: Quit",
-                (FocusedPane::Requests, true, _) => "1-4: Pane | j/k: Nav | Enter: Select | e: Exec | a: Add | f: Fav | v: Env | V: Vars | Ctrl+q: Quit",
-                (FocusedPane::Requests, false, _) => "1-4: Pane | j/k: Nav | Enter: Select | e: Exec | a: Add | f: Fav | v: Env | Ctrl+q: Quit",
-                (FocusedPane::Preview, true, true) => "1-4: Pane | e: Exec | E: Edit | S: Save* | D: Discard | v: Env | V: Vars | Ctrl+q: Quit",
-                (FocusedPane::Preview, true, false) => "1-4: Pane | e: Exec | E: Edit | v: Env | V: Vars | Ctrl+q: Quit",
-                (FocusedPane::Preview, false, true) => "1-4: Pane | e: Exec | E: Edit | S: Save* | D: Discard | v: Env | Ctrl+q: Quit",
-                (FocusedPane::Preview, false, false) => "1-4: Pane | e: Exec | E: Edit | v: Env | Ctrl+q: Quit",
+                (FocusedPane::Collections, true, _) => "1-5: Pane | j/k: Nav | Enter: Load | f: Fav | v: Env | V: Vars | Ctrl+q: Quit",
+                (FocusedPane::Collections, false, _) => "1-5: Pane | j/k: Nav | Enter: Load | f: Fav | v: Env | Ctrl+q: Quit",
+                (FocusedPane::Requests, true, _) => "1-5: Pane | j/k: Nav | Enter: Select | e: Exec | a: Add | f: Fav | v: Env | V: Vars | Ctrl+q: Quit",
+                (FocusedPane::Requests, false, _) => "1-5: Pane | j/k: Nav | Enter: Select | e: Exec | a: Add | f: Fav | v: Env | Ctrl+q: Quit",
+                (FocusedPane::Favorites, true, _) => "1-5: Pane | j/k: Nav | Enter: Open | f: Unfav | v: Env | V: Vars | Ctrl+q: Quit",
+                (FocusedPane::Favorites, false, _) => "1-5: Pane | j/k: Nav | Enter: Open | f: Unfav | v: Env | Ctrl+q: Quit",
+                (FocusedPane::Preview, true, true) => "1-5: Pane | e: Exec | E: Edit | S: Save* | D: Discard | v: Env | V: Vars | Ctrl+q: Quit",
+                (FocusedPane::Preview, true, false) => "1-5: Pane | e: Exec | E: Edit | v: Env | V: Vars | Ctrl+q: Quit",
+                (FocusedPane::Preview, false, true) => "1-5: Pane | e: Exec | E: Edit | S: Save* | D: Discard | v: Env | Ctrl+q: Quit",
+                (FocusedPane::Preview, false, false) => "1-5: Pane | e: Exec | E: Edit | v: Env | Ctrl+q: Quit",
                 (FocusedPane::Response, true, _) => if app.json_viewer_state.is_some() {
                     "j/k: Nav | h/l: Fold | H/L: Fold All | /: Search | n/N: Match | y: Copy | v: Env | Ctrl+q: Quit"
                 } else {
-                    "1-4: Pane | v: Env | V: Vars | Ctrl+q: Quit"
+                    "1-5: Pane | v: Env | V: Vars | Ctrl+q: Quit"
                 },
                 (FocusedPane::Response, false, _) => if app.json_viewer_state.is_some() {
                     "j/k: Nav | h/l: Fold | H/L: Fold All | /: Search | n/N: Match | y: Copy | v: Env | Ctrl+q: Quit"
                 } else {
-                    "1-4: Pane | v: Env | Ctrl+q: Quit"
+                    "1-5: Pane | v: Env | Ctrl+q: Quit"
                 },
             }
         },

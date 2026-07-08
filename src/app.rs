@@ -20,6 +20,7 @@ pub struct EditableRequest {
 pub enum FocusedPane {
     Collections,
     Requests,
+    Favorites,
     Preview,
     Response,
 }
@@ -117,6 +118,18 @@ pub struct FlatItem {
     pub path: Vec<usize>,
 }
 
+/// A favorited request resolved for display in the Favorites pane. Name and
+/// method come from the session cache when the collection has been loaded,
+/// falling back to the name stored in config at favoriting time.
+#[derive(Debug, Clone)]
+pub struct FavoriteEntry {
+    pub collection_uid: String,
+    pub path: Vec<usize>,
+    pub collection_name: String,
+    pub name: String,
+    pub method: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct FlatCollection {
     pub name: String,
@@ -153,6 +166,11 @@ pub struct App {
     // scrolls when the selection reaches the top or bottom edge of the pane.
     pub collections_list_state: ListState,
     pub requests_list_state: ListState,
+    pub favorites_list_state: ListState,
+    pub selected_favorite_index: usize,
+    /// Request path to select once a collection load kicked off from the
+    /// Favorites pane completes.
+    pub pending_favorite_path: Option<Vec<usize>>,
     pub loading: bool,
     pub error: Option<String>,
     pub status_message: String,
@@ -230,9 +248,12 @@ impl App {
             json_viewer_state: None,
             collections_list_state: ListState::default(),
             requests_list_state: ListState::default(),
+            favorites_list_state: ListState::default(),
+            selected_favorite_index: 0,
+            pending_favorite_path: None,
             loading: false,
             error: None,
-            status_message: String::from("1/2/3: Switch pane | j/k: Navigate | Enter: Select | f: Favorite | Ctrl+q: Quit"),
+            status_message: String::from("1-5: Switch pane | j/k: Navigate | Enter: Select | f: Favorite | Ctrl+q: Quit"),
             input_mode: InputMode::Normal,
             new_request_dialog: None,
             pending_save: None,
@@ -299,7 +320,7 @@ impl App {
                 }
             }
             FocusedPane::Requests => {
-                if self.flat_items.is_empty() || self.collections.is_empty() {
+                if self.flat_items.is_empty() {
                     return;
                 }
                 let item = &self.flat_items[self.selected_item_index];
@@ -307,14 +328,18 @@ impl App {
                 if item.path == vec![usize::MAX] {
                     return;
                 }
-                let collection_uid = self.collections[self.selected_collection_index].uid.clone();
+                let collection_uid = match self.get_current_collection_uid() {
+                    Some(uid) => uid,
+                    None => return,
+                };
                 let path = item.path.clone();
+                let name = item.name.clone();
 
                 if self.config.is_request_favorite(&collection_uid, &path) {
                     self.config.remove_favorite_request(&collection_uid, &path);
                     self.status_message = String::from("Removed from favorites");
                 } else {
-                    self.config.add_favorite_request(collection_uid, path.clone());
+                    self.config.add_favorite_request(collection_uid, path.clone(), name);
                     self.status_message = String::from("Added to favorites");
                 }
 
@@ -323,6 +348,25 @@ impl App {
                 // Find and select the item again by path
                 if let Some(new_index) = self.flat_items.iter().position(|item| item.path == path) {
                     self.selected_item_index = new_index;
+                }
+            }
+            FocusedPane::Favorites => {
+                let entry = match self.favorite_entries().into_iter().nth(self.selected_favorite_index) {
+                    Some(e) => e,
+                    None => return,
+                };
+                self.config.remove_favorite_request(&entry.collection_uid, &entry.path);
+                self.status_message = String::from("Removed from favorites");
+                if self.selected_favorite_index > 0
+                    && self.selected_favorite_index >= self.config.favorite_requests.len()
+                {
+                    self.selected_favorite_index -= 1;
+                }
+                // The removed request may be in the current collection's
+                // Favorites section, so rebuild the request tree.
+                self.flatten_items();
+                if !self.flat_items.is_empty() && self.selected_item_index >= self.flat_items.len() {
+                    self.selected_item_index = self.flat_items.len() - 1;
                 }
             }
             FocusedPane::Preview | FocusedPane::Response => {
@@ -338,12 +382,78 @@ impl App {
         }
     }
 
-    pub fn is_request_favorite(&self, path: &[usize]) -> bool {
-        if self.collections.is_empty() {
-            return false;
+    /// All favorited requests across collections, resolved for display. Names
+    /// and methods come from the session cache when available (so renames show
+    /// through), falling back to the name stored when the request was favorited.
+    pub fn favorite_entries(&self) -> Vec<FavoriteEntry> {
+        self.config
+            .favorite_requests
+            .iter()
+            .map(|fav| {
+                let collection_name = self
+                    .collections
+                    .iter()
+                    .find(|c| c.uid == fav.collection_uid)
+                    .map(|c| c.name.clone())
+                    .unwrap_or_else(|| String::from("Unknown collection"));
+
+                let cached = self
+                    .collection_cache
+                    .get(&fav.collection_uid)
+                    .and_then(|detail| get_item_at_path(&detail.item, &fav.path));
+
+                let (name, method) = match cached {
+                    Some((name, request, _)) => (name, request.map(|r| r.method)),
+                    None => {
+                        let name = if fav.name.is_empty() {
+                            String::from("(request)")
+                        } else {
+                            fav.name.clone()
+                        };
+                        (name, None)
+                    }
+                };
+
+                FavoriteEntry {
+                    collection_uid: fav.collection_uid.clone(),
+                    path: fav.path.clone(),
+                    collection_name,
+                    name,
+                    method,
+                }
+            })
+            .collect()
+    }
+
+    /// Begin loading the collection that owns the selected favorite, queuing
+    /// the request path to be selected once the collection is in place.
+    pub fn start_favorite_load(&mut self) -> CollectionLoad {
+        let entry = match self.favorite_entries().into_iter().nth(self.selected_favorite_index) {
+            Some(e) => e,
+            None => return CollectionLoad::None,
+        };
+
+        let collection_index = self.flat_collections.iter().position(|c| {
+            !c.is_favorites_folder && c.uid == entry.collection_uid
+        });
+        match collection_index {
+            Some(idx) => self.selected_collection_index = idx,
+            None => {
+                self.status_message =
+                    String::from("Collection not available in this workspace");
+                return CollectionLoad::None;
+            }
         }
-        let collection_uid = &self.collections[self.selected_collection_index].uid;
-        self.config.is_request_favorite(collection_uid, path)
+
+        self.pending_favorite_path = Some(entry.path);
+        self.start_collection_load()
+    }
+
+    pub fn is_request_favorite(&self, path: &[usize]) -> bool {
+        match &self.current_collection_uid {
+            Some(uid) => self.config.is_request_favorite(uid, path),
+            None => false,
+        }
     }
 
     fn sort_collections(&mut self) {
@@ -416,10 +526,11 @@ impl App {
 
     fn update_status_for_pane(&mut self) {
         self.status_message = match self.focused_pane {
-            FocusedPane::Collections => String::from("1-4: Switch pane | j/k: Navigate | Enter: Load | /: Search | Ctrl+q: Quit"),
-            FocusedPane::Requests => String::from("1-4: Switch pane | j/k: Navigate | Enter: Select | e: Execute | a: Add | /: Search | Ctrl+q: Quit"),
-            FocusedPane::Preview => String::from("1-4: Switch pane | e: Execute | Ctrl+q: Quit"),
-            FocusedPane::Response => String::from("1-4: Switch pane | Ctrl+q: Quit"),
+            FocusedPane::Collections => String::from("1-5: Switch pane | j/k: Navigate | Enter: Load | /: Search | Ctrl+q: Quit"),
+            FocusedPane::Requests => String::from("1-5: Switch pane | j/k: Navigate | Enter: Select | e: Execute | a: Add | /: Search | Ctrl+q: Quit"),
+            FocusedPane::Favorites => String::from("1-5: Switch pane | j/k: Navigate | Enter: Open | f: Unfavorite | Ctrl+q: Quit"),
+            FocusedPane::Preview => String::from("1-5: Switch pane | e: Execute | Ctrl+q: Quit"),
+            FocusedPane::Response => String::from("1-5: Switch pane | Ctrl+q: Quit"),
         };
     }
 
@@ -578,6 +689,7 @@ impl App {
 
             // Clear current collection view
             self.current_collection = None;
+            self.current_collection_uid = None;
             self.flat_items.clear();
             self.current_request = None;
             self.response = None;
@@ -970,6 +1082,11 @@ impl App {
         self.current_request = None;
         self.response = None;
         self.set_focus(FocusedPane::Requests);
+        // Jump straight to the request when the load came from the Favorites pane.
+        if let Some(path) = self.pending_favorite_path.take() {
+            self.restore_request_path(&path);
+            self.select_request();
+        }
         self.save_last_state();
     }
 
@@ -1032,6 +1149,7 @@ impl App {
     /// Reset loading state after the user cancels an in-flight collection load.
     pub fn cancel_collection_load(&mut self) {
         self.collection_loading = None;
+        self.pending_favorite_path = None;
         self.status_message = String::from("Loading cancelled");
     }
 
@@ -1041,11 +1159,7 @@ impl App {
         if let Some(collection) = &self.current_collection {
             let items = collection.item.clone();
             let expanded = self.expanded_folders.clone();
-            let collection_uid = if self.collections.is_empty() {
-                String::new()
-            } else {
-                self.collections[self.selected_collection_index].uid.clone()
-            };
+            let collection_uid = self.current_collection_uid.clone().unwrap_or_default();
             let favorite_paths: Vec<Vec<usize>> = self.config.favorite_requests
                 .iter()
                 .filter(|f| f.collection_uid == collection_uid)
@@ -1117,40 +1231,44 @@ impl App {
         let item_path = item.path.clone();
 
         if let Some(request) = &item.request {
-            // Check if there's a local edit for this request
-            if let Some(local_edit) = self.get_local_edit(&item_path) {
-                // Apply the local edit
-                self.current_request = Some(Request {
-                    method: local_edit.method.clone(),
-                    url: if local_edit.url.is_empty() {
-                        RequestUrl::Empty
-                    } else {
-                        RequestUrl::Simple(local_edit.url.clone())
-                    },
-                    header: request.header.clone(),
-                    auth: request.auth.clone(),
-                    body: if local_edit.body.is_empty() {
-                        None
-                    } else {
-                        Some(crate::api::RequestBody {
-                            mode: Some("raw".to_string()),
-                            raw: Some(local_edit.body.clone()),
-                        })
-                    },
-                    description: request.description.clone(),
-                });
-                // Also set unsaved_edit so the UI knows it's modified
-                self.unsaved_edit = Some((local_edit, self.selected_item_index));
-            } else {
-                self.current_request = Some(request.clone());
-                self.unsaved_edit = None;
-            }
+            let request = request.clone();
+            self.set_current_request(request, &item_path);
             self.response = None;
             self.json_viewer_state = None;
             self.set_focus(FocusedPane::Preview);
 
             // Save state for persistence
             self.save_last_state();
+        }
+    }
+
+    /// Set `current_request` for the given item, applying any local edit
+    /// stored for it (and marking the edit as unsaved so the UI shows it).
+    fn set_current_request(&mut self, request: Request, item_path: &[usize]) {
+        if let Some(local_edit) = self.get_local_edit(item_path) {
+            self.current_request = Some(Request {
+                method: local_edit.method.clone(),
+                url: if local_edit.url.is_empty() {
+                    RequestUrl::Empty
+                } else {
+                    RequestUrl::Simple(local_edit.url.clone())
+                },
+                header: request.header.clone(),
+                auth: request.auth.clone(),
+                body: if local_edit.body.is_empty() {
+                    None
+                } else {
+                    Some(crate::api::RequestBody {
+                        mode: Some("raw".to_string()),
+                        raw: Some(local_edit.body.clone()),
+                    })
+                },
+                description: request.description.clone(),
+            });
+            self.unsaved_edit = Some((local_edit, self.selected_item_index));
+        } else {
+            self.current_request = Some(request);
+            self.unsaved_edit = None;
         }
     }
 
@@ -1800,13 +1918,9 @@ impl App {
         self.unsaved_edit.is_some()
     }
 
-    /// Get the UID of the currently selected collection
+    /// Get the UID of the currently loaded collection
     pub fn get_current_collection_uid(&self) -> Option<String> {
-        if self.selected_collection_index < self.collections.len() {
-            Some(self.collections[self.selected_collection_index].uid.clone())
-        } else {
-            None
-        }
+        self.current_collection_uid.clone()
     }
 
     /// Check if a request at the given path has a local edit
@@ -1891,6 +2005,10 @@ impl App {
                     self.save_last_state();
                 }
             }
+            FocusedPane::Favorites => {
+                self.selected_favorite_index =
+                    self.selected_favorite_index.saturating_sub(Self::JUMP_STEP);
+            }
             FocusedPane::Preview | FocusedPane::Response => {}
         }
     }
@@ -1913,6 +2031,13 @@ impl App {
                     self.save_last_state();
                 }
             }
+            FocusedPane::Favorites => {
+                let count = self.config.favorite_requests.len();
+                if count > 0 {
+                    self.selected_favorite_index =
+                        (self.selected_favorite_index + Self::JUMP_STEP).min(count - 1);
+                }
+            }
             FocusedPane::Preview | FocusedPane::Response => {}
         }
     }
@@ -1929,6 +2054,11 @@ impl App {
                     self.selected_item_index -= 1;
                     self.update_preview_from_selection();
                     self.save_last_state();
+                }
+            }
+            FocusedPane::Favorites => {
+                if self.selected_favorite_index > 0 {
+                    self.selected_favorite_index -= 1;
                 }
             }
             FocusedPane::Preview | FocusedPane::Response => {}
@@ -1953,6 +2083,12 @@ impl App {
                     self.save_last_state();
                 }
             }
+            FocusedPane::Favorites => {
+                let count = self.config.favorite_requests.len();
+                if count > 0 && self.selected_favorite_index < count - 1 {
+                    self.selected_favorite_index += 1;
+                }
+            }
             FocusedPane::Preview | FocusedPane::Response => {}
         }
     }
@@ -1960,7 +2096,9 @@ impl App {
     pub fn update_preview_from_selection(&mut self) {
         if let Some(item) = self.flat_items.get(self.selected_item_index) {
             if let Some(request) = &item.request {
-                self.current_request = Some(request.clone());
+                let request = request.clone();
+                let item_path = item.path.clone();
+                self.set_current_request(request, &item_path);
                 self.response = None;
             }
         }
@@ -2094,7 +2232,14 @@ impl App {
             }
         };
 
-        let collection_uid = self.collections[self.selected_collection_index].uid.clone();
+        let collection_uid = match self.get_current_collection_uid() {
+            Some(uid) => uid,
+            None => {
+                self.loading = false;
+                self.status_message = String::from("No collection loaded");
+                return Ok(());
+            }
+        };
 
         // Create the new request item
         let new_request = Item::Request(RequestItem {
@@ -2153,7 +2298,7 @@ impl App {
 
     // Search methods
     pub fn start_search(&mut self) {
-        if self.focused_pane == FocusedPane::Preview {
+        if matches!(self.focused_pane, FocusedPane::Preview | FocusedPane::Favorites) {
             return;
         }
         self.search_query.clear();
@@ -2162,7 +2307,7 @@ impl App {
         self.pre_search_index = match self.focused_pane {
             FocusedPane::Collections => self.selected_collection_index,
             FocusedPane::Requests => self.selected_item_index,
-            FocusedPane::Preview | FocusedPane::Response => 0,
+            FocusedPane::Favorites | FocusedPane::Preview | FocusedPane::Response => 0,
         };
         self.input_mode = InputMode::Search;
         self.status_message = String::from("Type to search, Enter to confirm, Esc to cancel");
@@ -2226,7 +2371,7 @@ impl App {
                     search_items_recursive(&items, &query, vec![], &mut self.search_match_paths);
                 }
             }
-            FocusedPane::Preview | FocusedPane::Response => {}
+            FocusedPane::Favorites | FocusedPane::Preview | FocusedPane::Response => {}
         }
 
         self.update_search_status();
@@ -2273,7 +2418,7 @@ impl App {
                     }
                 }
             }
-            FocusedPane::Preview | FocusedPane::Response => {}
+            FocusedPane::Favorites | FocusedPane::Preview | FocusedPane::Response => {}
         }
     }
 
@@ -2291,7 +2436,7 @@ impl App {
         match self.focused_pane {
             FocusedPane::Collections => self.selected_collection_index = self.pre_search_index,
             FocusedPane::Requests => self.selected_item_index = self.pre_search_index,
-            FocusedPane::Preview | FocusedPane::Response => {}
+            FocusedPane::Favorites | FocusedPane::Preview | FocusedPane::Response => {}
         }
         self.search_query.clear();
         self.search_matches.clear();

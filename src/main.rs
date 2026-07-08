@@ -380,9 +380,12 @@ async fn run_app(
                                 app.set_focus(FocusedPane::Requests);
                             }
                             KeyCode::Char('3') => {
-                                app.set_focus(FocusedPane::Preview);
+                                app.set_focus(FocusedPane::Favorites);
                             }
                             KeyCode::Char('4') => {
+                                app.set_focus(FocusedPane::Preview);
+                            }
+                            KeyCode::Char('5') => {
                                 if app.response.is_some() {
                                     app.set_focus(FocusedPane::Response);
                                 }
@@ -465,6 +468,13 @@ async fn run_app(
                                         } else {
                                             app.select_request();
                                         }
+                                    }
+                                }
+                                FocusedPane::Favorites => {
+                                    // Load the owning collection (cached or fetched) and
+                                    // jump to the favorited request.
+                                    if app.start_favorite_load() == app::CollectionLoad::Cached {
+                                        spawn_collection_refresh(&mut app);
                                     }
                                 }
                                 FocusedPane::Preview => {
@@ -556,7 +566,8 @@ async fn run_app(
                             KeyCode::Tab => {
                                 let next_pane = match app.focused_pane {
                                     FocusedPane::Collections => FocusedPane::Requests,
-                                    FocusedPane::Requests => FocusedPane::Preview,
+                                    FocusedPane::Requests => FocusedPane::Favorites,
+                                    FocusedPane::Favorites => FocusedPane::Preview,
                                     FocusedPane::Preview => {
                                         if app.response.is_some() {
                                             FocusedPane::Response
